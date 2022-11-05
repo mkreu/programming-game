@@ -12,6 +12,7 @@ pub struct Dram {
     pub dram: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl Dram {
     /// Create a new `Dram` instance with default dram size.
     pub fn new(code: Vec<u8>) -> Dram {
@@ -27,7 +28,6 @@ impl Dram {
             8 => Ok(self.load8(addr)),
             16 => Ok(self.load16(addr)),
             32 => Ok(self.load32(addr)),
-            64 => Ok(self.load64(addr)),
             _ => Err(()),
         }
     }
@@ -38,7 +38,6 @@ impl Dram {
             8 => Ok(self.store8(addr, value)),
             16 => Ok(self.store16(addr, value)),
             32 => Ok(self.store32(addr, value)),
-            64 => Ok(self.store64(addr, value)),
             _ => Err(()),
         }
     }
