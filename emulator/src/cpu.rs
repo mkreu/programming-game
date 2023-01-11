@@ -1,3 +1,7 @@
+use elf::{abi::PT_LOAD, endian::LittleEndian, ElfBytes};
+
+use crate::dram;
+
 pub struct Cpu {
     pub regs: [u32; 32],
     pub pc: u32,
@@ -6,10 +10,34 @@ pub struct Cpu {
 
 impl Cpu {
     pub fn new(code: Vec<u8>) -> Self {
+        let elf = ElfBytes::<LittleEndian>::minimal_parse(&code).expect("failed to parse elf file");
+
+        let all_load_phdrs = elf
+            .segments()
+            .unwrap()
+            .iter()
+            .filter(|phdr| phdr.p_type == PT_LOAD);
+
+        let mut mem = vec![0u8; dram::DRAM_SIZE as usize];
+
+        for phdr in all_load_phdrs {
+            let vaddr = phdr.p_vaddr as usize;
+            let offset = phdr.p_offset as usize;
+            let filesz = phdr.p_filesz as usize;
+
+            println!("vaddr: {vaddr:x}");
+            println!("offset: {offset:x}");
+            println!("filesz: {filesz:x}");
+            mem[vaddr..vaddr + filesz].copy_from_slice(&code[offset..offset + filesz]);
+        }
+
+        let entry = elf.ehdr.e_entry;
+        println!("entry: {entry:x}");
+
         Self {
             regs: [0; 32],
-            pc: 0,
-            dram: code,
+            pc: elf.ehdr.e_entry as u32,
+            dram: mem,
         }
     }
     #[allow(dead_code)]
@@ -29,8 +57,8 @@ impl Cpu {
 
         self.regs[0] = 0; // Simulate hard wired x0
 
-        println!("opcode: {opcode:x}");
-        println!("funct3: {funct3:x}");
+        println!("opcode: {opcode:b}");
+        println!("funct3: {funct3:b}");
 
         match opcode {
             0x13 => {
@@ -162,10 +190,11 @@ impl Cpu {
                     | ((inst >> 9) & 0x800) // imm[11]
                     | ((inst >> 20) & 0x7fe); // imm[10:1]
 
-                self.pc = self.pc.wrapping_add(imm);
+                self.pc = self.pc.wrapping_add(imm).wrapping_sub(4);
             }
             _ => {
                 dbg!("opcode not implemented yet");
+                panic!()
             }
         }
     }
