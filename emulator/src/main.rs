@@ -1,5 +1,7 @@
 use cpu::Cpu;
 use dram::{Dram, DRAM_BASE};
+use log::{LevelFilter, debug};
+use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
 use std::env;
 use std::{fs, io};
 
@@ -7,6 +9,14 @@ mod cpu;
 mod dram;
 
 fn main() -> io::Result<()> {
+    TermLogger::init(
+        LevelFilter::Debug,
+        Config::default(),
+        TerminalMode::Stderr,
+        ColorChoice::Auto,
+    )
+    .unwrap();
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 2 {
@@ -16,9 +26,10 @@ fn main() -> io::Result<()> {
 
     let (dram, entry) = Dram::new(code);
 
+
     let mut cpu = Cpu::new(dram, entry);
 
-    while cpu.pc < cpu.dram.dram.len() as u32+ DRAM_BASE {
+    while cpu.pc < cpu.dram.dram.len() as u32 + DRAM_BASE {
         // 1. Fetch.
         let inst = cpu.fetch();
 

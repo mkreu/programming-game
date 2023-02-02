@@ -1,3 +1,4 @@
+use log::debug;
 
 use crate::dram::Dram;
 
@@ -8,13 +9,14 @@ pub struct Cpu {
 }
 
 impl Cpu {
-    pub fn new(dram : Dram, entry: u32) -> Self {
-
-        Self {
+    pub fn new(dram: Dram, entry: u32) -> Self {
+        let mut cpu = Self {
             regs: [0; 32],
             pc: entry,
             dram: dram,
-        }
+        };
+        cpu.regs[2] = 128; // ehh i dont know how stack pointer work...
+        return cpu;
     }
     #[allow(dead_code)]
     pub fn fetch(&self) -> u32 {
@@ -32,8 +34,8 @@ impl Cpu {
 
         self.regs[0] = 0; // Simulate hard wired x0
 
-        println!("opcode: {opcode:b}");
-        println!("funct3: {funct3:b}");
+        //println!("opcode: {opcode:b}; {opcode:x}");
+        //println!("funct3: {funct3:b}; {funct3:b}");
 
         match opcode {
             0x13 => {
@@ -42,6 +44,8 @@ impl Cpu {
                 match funct3 {
                     0x0 => {
                         // addi
+                        let immi = imm as i32;
+                        debug!("addi {rd} {rs1} {immi}");
                         self.regs[rd] = self.regs[rs1].wrapping_add(imm);
                     }
                     0x1 => {
@@ -148,14 +152,18 @@ impl Cpu {
             0x37 => {
                 // lui
                 let imm = inst & 0xfffff000;
+                let immi = imm >> 12;
+                debug!("lui {rd} {rs1} {immi}");
                 self.regs[rd] = imm;
             }
             0x17 => {
                 // apcui
                 let imm = inst & 0xfffff000;
+                debug!("apcui {rd} {imm}");
                 self.regs[rd] = self.pc.wrapping_add(imm);
             }
             0x6f => {
+                panic!("jal");
                 // jal
                 self.regs[rd] = self.pc.wrapping_add(4);
 
@@ -170,11 +178,13 @@ impl Cpu {
             0x67 => {
                 // jalr
                 let imm = ((inst & 0xfff0_0000) as i32 >> 20) as u32;
+                debug!("jalr {imm}({rs1})");
                 self.regs[rd] = self.pc.wrapping_add(4);
                 self.pc = self.regs[rs1].wrapping_add(imm) & 0xffff_fffe
             }
             0x23 => {
-                let offset = ((inst & 0xfff0_0000) as i32 >> 20) as u32 | (inst & 0x0000_0f80) >> 7;
+                // sw
+                let offset = ((inst & 0xfe00_0000) as i32 >> 20) as u32 | (inst & 0x0000_0f80) >> 7;
                 let width = match funct3 {
                     0x0 => 8,
                     0x1 => 16,
@@ -183,6 +193,7 @@ impl Cpu {
                         panic!("funct3 {funct3:x} invalid for opcode {opcode:x}");
                     }
                 };
+                debug!("s({funct3:x}) {rs2} {offset}({rs1})");
                 self.dram
                     .store(self.regs[rs1].wrapping_add(offset), width, self.regs[rs2])
                     .expect("failed to write to memory")
