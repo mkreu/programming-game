@@ -1,7 +1,6 @@
-use elf::{abi::PT_LOAD, endian::LittleEndian, ElfBytes};
-use tracing::trace;
+use tracing::{trace, debug};
 
-use crate::dram::{self, Dram};
+use crate::dram::Dram;
 
 pub struct Cpu {
     pub regs: [u32; 32],
@@ -257,7 +256,7 @@ impl Cpu {
                 panic!("execution finished");
             }
             0x6f => {
-                panic!("jal");
+                debug!("jal");
                 // jal
                 self.regs[rd] = self.pc.wrapping_add(4);
 

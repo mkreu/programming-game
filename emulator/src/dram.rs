@@ -1,6 +1,7 @@
 //! The dram module contains a dram structure and implementation for dram access.
 
-use tracing::trace;
+use tracing::{trace, debug};
+use elf::{abi::PT_LOAD, endian::LittleEndian, ElfBytes};
 
 /// Default dram size (128MiB).
 pub const DRAM_SIZE: u32 = 1024 * 1024 * 128;
@@ -13,9 +14,6 @@ pub const DRAM_BASE: u32 = 0x80_0000;
 pub struct Dram {
     pub dram: Vec<u8>,
 }
-
-use elf::{abi::PT_LOAD, endian::LittleEndian, ElfBytes};
-use log::debug;
 
 #[allow(dead_code)]
 impl Dram {

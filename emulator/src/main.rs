@@ -1,4 +1,5 @@
 use cpu::Cpu;
+use dram::{Dram, DRAM_BASE};
 use tracing::metadata::LevelFilter;
 use std::env;
 use std::{fs, io};
