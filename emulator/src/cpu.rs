@@ -1,11 +1,12 @@
 use elf::{abi::PT_LOAD, endian::LittleEndian, ElfBytes};
+use tracing::trace;
 
-use crate::dram;
+use crate::dram::{self, Dram};
 
 pub struct Cpu {
     pub regs: [u32; 32],
     pub pc: u32,
-    pub dram: Vec<u8>,
+    pub dram: Dram,
 }
 
 impl Cpu {
@@ -37,16 +38,17 @@ impl Cpu {
         Self {
             regs: [0; 32],
             pc: elf.ehdr.e_entry as u32,
-            dram: mem,
+            dram: Dram { dram: mem },
         }
     }
     #[allow(dead_code)]
     pub fn fetch(&self) -> u32 {
         let index = self.pc as usize;
-        return (self.dram[index] as u32)
-            | ((self.dram[index + 1] as u32) << 8)
-            | ((self.dram[index + 2] as u32) << 16)
-            | ((self.dram[index + 3] as u32) << 24);
+        //return (self.dram.dram[index] as u32)
+        //    | ((self.dram.dram[index + 1] as u32) << 8)
+        //    | ((self.dram.dram[index + 2] as u32) << 16)
+        //    | ((self.dram.dram[index + 3] as u32) << 24);
+        return self.dram.load(self.pc, 32).unwrap();
     }
     pub fn execute(&mut self, inst: u32) {
         let opcode = inst & 0x7f;
@@ -57,8 +59,7 @@ impl Cpu {
 
         self.regs[0] = 0; // Simulate hard wired x0
 
-        println!("opcode: {opcode:b}");
-        println!("funct3: {funct3:b}");
+        trace!("op: {opcode:x}; f3: {funct3:x}");
 
         match opcode {
             0x13 => {
@@ -108,6 +109,25 @@ impl Cpu {
                     }
                     _ => {
                         dbg!("func not implemented yet");
+                    }
+                }
+            }
+            0x23 => {
+                // imm[11:5|4:0] = inst[31:25|11:7]
+                let imm = ((inst as i32 >> 20) as u32) // imm[11:5]
+                    | ((inst >> 7) & 0x1f); // imm[4:0]
+                match funct3 {
+                    0x0 => {
+                        self.dram.store(rs1 as u32 + imm, 8, rs2 as u32).unwrap();
+                    },
+                    0x1 => {
+                        self.dram.store(rs1 as u32 + imm, 16, rs2 as u32).unwrap();
+                    },
+                    0x2 => {
+                        self.dram.store(rs1 as u32 + imm, 32, rs2 as u32).unwrap();
+                    }
+                    _ => {
+                        panic!("invalid funct3")
                     }
                 }
             }

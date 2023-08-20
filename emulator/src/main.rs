@@ -1,4 +1,5 @@
 use cpu::Cpu;
+use tracing::metadata::LevelFilter;
 use std::env;
 use std::{fs, io};
 
@@ -6,6 +7,8 @@ mod cpu;
 mod dram;
 
 fn main() -> io::Result<()> {
+    tracing_subscriber::FmtSubscriber::builder().with_max_level(LevelFilter::TRACE).init();
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 2 {
@@ -15,7 +18,7 @@ fn main() -> io::Result<()> {
 
     let mut cpu = Cpu::new(code);
 
-    while cpu.pc < cpu.dram.len() as u32 {
+    while cpu.pc < cpu.dram.dram.len() as u32 {
         // 1. Fetch.
         let inst = cpu.fetch();
 

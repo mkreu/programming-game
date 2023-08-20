@@ -1,10 +1,12 @@
 //! The dram module contains a dram structure and implementation for dram access.
 
+use tracing::trace;
+
 /// Default dram size (128MiB).
 pub const DRAM_SIZE: u32 = 1024 * 1024 * 128;
 
 /// The address which dram starts, same as QEMU virt machine.
-pub const DRAM_BASE: u32 = 0x8000_0000;
+pub const DRAM_BASE: u32 = 0x0;
 
 /// The dynamic random access dram (DRAM).
 #[derive(Debug)]
@@ -24,6 +26,7 @@ impl Dram {
 
     /// Load bytes from the little-endiam dram.
     pub fn load(&self, addr: u32, size: u32) -> Result<u32, ()> {
+        trace!("load(addr: {addr:x}, size: {size})");
         match size {
             8 => Ok(self.load8(addr)),
             16 => Ok(self.load16(addr)),
@@ -34,6 +37,7 @@ impl Dram {
 
     /// Store bytes to the little-endiam dram.
     pub fn store(&mut self, addr: u32, size: u32, value: u32) -> Result<(), ()> {
+        trace!("store(addr: {addr:x}, size: {size})");
         match size {
             8 => Ok(self.store8(addr, value)),
             16 => Ok(self.store16(addr, value)),
