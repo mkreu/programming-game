@@ -4,11 +4,16 @@ use std::env;
 use std::{fs, io};
 use tracing::metadata::LevelFilter;
 use tracing::{debug, info};
+use color_eyre::Result;
 
 mod cpu;
 mod dram;
+mod tui;
+fn main() -> Result<()> {
+    tui::run()
+}
 
-fn main() -> io::Result<()> {
+fn run_cpu() -> io::Result<()> {
     tracing_subscriber::FmtSubscriber::builder()
         .with_max_level(LevelFilter::DEBUG)
         .init();
