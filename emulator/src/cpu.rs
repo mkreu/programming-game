@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use crate::dram::Dram;
 
