@@ -1,5 +1,5 @@
 use cpu::Cpu;
-use dram::{Dram, DRAM_BASE};
+use dram::{Dram, DRAM_SIZE};
 use std::env;
 use std::{fs, io};
 use tracing::metadata::LevelFilter;
@@ -23,7 +23,7 @@ fn main() -> Result<()> {
 
     let (mut dram, entry) = Dram::new(code);
 
-    dram.store(0x400, 32, 4).unwrap();
+    dram.store(DRAM_SIZE - 4, 32, 4).unwrap();
 
     let mut cpu = Cpu::new(dram, entry);
 
@@ -44,14 +44,14 @@ fn run_cpu() -> io::Result<()> {
 
     let (mut dram, entry) = Dram::new(code);
 
-    dram.store(0x400, 32, 4).unwrap();
+    dram.store(DRAM_SIZE - 4, 32, 4).unwrap();
 
     let mut cpu = Cpu::new(dram, entry);
 
     info!("{}", cpu.dram.dram.len());
     info!("{:x}", cpu.dram.dram.len());
 
-    while cpu.pc < cpu.dram.dram.len() as u32 + DRAM_BASE {
+    while cpu.pc < cpu.dram.dram.len() as u32 {
         // 1. Fetch.
         let inst = cpu.fetch();
 

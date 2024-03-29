@@ -3,11 +3,8 @@
 use elf::{abi::PT_LOAD, endian::LittleEndian, ElfBytes};
 use tracing::{debug, trace};
 
-/// Default dram size (128MiB).
-pub const DRAM_SIZE: u32 = 1024 * 1024 * 128;
-
-/// The address which dram starts, same as QEMU virt machine.
-pub const DRAM_BASE: u32 = 0x80_0000;
+/// Default dram size (64KiB).
+pub const DRAM_SIZE: u32 = 1024 * 64;
 
 /// The dynamic random access dram (DRAM).
 #[derive(Debug)]
@@ -38,29 +35,26 @@ impl Dram {
         let mut mem = vec![0u8; DRAM_SIZE as usize];
 
         for phdr in all_load_phdrs {
-            let vaddr = phdr.p_vaddr as usize - DRAM_BASE as usize;
+            let vaddr = phdr.p_vaddr as usize;
             let offset = phdr.p_offset as usize;
             let filesz = phdr.p_filesz as usize;
 
             println!("vaddr: {vaddr:x}");
             println!("offset: {offset:x}");
             println!("filesz: {filesz:x}");
-            mem[DRAM_BASE as usize + vaddr..DRAM_BASE as usize + vaddr + filesz]
+            mem[vaddr..vaddr + filesz]
                 .copy_from_slice(&code[offset..offset + filesz]);
         }
 
-        let entry = elf.ehdr.e_entry as u32 - DRAM_BASE;
+        let entry = elf.ehdr.e_entry as u32;
         debug!("entry: {entry:x}");
-        let mut dram = vec![0; DRAM_SIZE as usize];
-        dram.splice(..code.len(), code.iter().cloned());
-
         (Self { dram: mem }, entry)
     }
 
     /// Load bytes from the little-endiam dram.
     pub fn load(&self, addr: u32, size: u32) -> Result<u32, ()> {
         trace!("load(addr: {addr:x}, size: {size})");
-        let addr = addr + DRAM_BASE;
+        let addr = addr;
         match size {
             8 => Ok(self.load8(addr)),
             16 => Ok(self.load16(addr)),
@@ -72,7 +66,7 @@ impl Dram {
     /// Store bytes to the little-endiam dram.
     pub fn store(&mut self, addr: u32, size: u32, value: u32) -> Result<(), ()> {
         trace!("store(addr: {addr:x}, size: {size})");
-        let addr = addr + DRAM_BASE;
+        let addr = addr;
         match size {
             8 => Ok(self.store8(addr, value)),
             16 => Ok(self.store16(addr, value)),

@@ -20,7 +20,7 @@ use std::{
 
 use crate::cpu::instruction::Instruction;
 use crate::cpu::Cpu;
-use crate::dram::DRAM_BASE;
+use crate::dram::DRAM_SIZE;
 
 use self::widgets::{CpuWidget, DramWidget};
 
@@ -120,7 +120,7 @@ impl Widget for &App {
             .border_set(border::THICK);
 
         let pc_text = Text::from(vec![
-            Line::from(vec!["PC: ".into(), self.cpu.pc.to_string().yellow()]),
+            Line::from(vec!["PC: ".into(), format!("0x{:x}",self.cpu.pc).yellow()]),
             Line::from(format!("Inst: {:?}", Instruction::parse(self.cpu.fetch()))),
         ]);
 
@@ -130,7 +130,7 @@ impl Widget for &App {
             .render(layout[0], buf);
 
         CpuWidget::new(&self.cpu).render(layout[1], buf);
-        DramWidget::new(&self.cpu.dram, 0x400 + DRAM_BASE).render(layout[2], buf);
+        DramWidget::new(" Stack ", &self.cpu.dram, self.cpu.regs[2]).render(layout[2], buf);
 
     }
 }

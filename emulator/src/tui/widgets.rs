@@ -100,13 +100,14 @@ fn reg_name(reg: usize) -> &'static str {
 }
 
 pub struct DramWidget<'a> {
+    name: &'static str,
     dram: &'a Dram,
     start_offset: u32,
 }
 
 impl<'a> DramWidget<'a> {
-    pub fn new(dram: &'a Dram, start_offset: u32) -> Self {
-        Self { dram, start_offset }
+    pub fn new(name: &'static str, dram: &'a Dram, start_offset: u32) -> Self {
+        Self { name, dram, start_offset }
     }
 }
 
@@ -115,7 +116,7 @@ impl Widget for DramWidget<'_> {
     where
         Self: Sized,
     {
-        let title = Title::from(" Dram ".bold());
+        let title = Title::from(self.name.bold());
         let instructions = Title::from(Line::from(vec![
             " Step ".into(),
             "<Enter>".blue().bold(),
@@ -140,7 +141,7 @@ impl Widget for DramWidget<'_> {
                 .skip(self.start_offset as usize / 4)
                 .take(area.height as usize)
                 .map(|(i, chunk)| match chunk {
-                    &[b0, b1, b2, b3] => format!("{:x}: {b0:02x} {b1:02x} {b2:02x} {b3:02x}", i*4).into(),
+                    &[b0, b1, b2, b3] => format!("{:x}: {b0:02x} {b1:02x} {b2:02x} {b3:02x} {:>10}", i*4, b0 as u32 | (b1 as u32) << 8 | (b2 as u32) << 16 | (b3 as u32) << 24).into(),
                     _ => unreachable!(),
                 })
                 .collect::<Vec<Line>>(),

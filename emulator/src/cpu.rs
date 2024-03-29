@@ -5,7 +5,7 @@ use std::{
 
 use tracing::{debug, warn};
 
-use crate::dram::Dram;
+use crate::dram::{Dram, DRAM_SIZE};
 
 pub mod instruction;
 
@@ -24,7 +24,7 @@ impl Cpu {
             pc: entry,
             dram: dram,
         };
-        cpu.regs[2] = 0x100; // ehh i dont know how stack pointer work...
+        cpu.regs[2] = DRAM_SIZE - 8;
         return cpu;
     }
     #[allow(dead_code)]
@@ -55,26 +55,26 @@ impl Cpu {
                 let imm = (inst as i32 >> 20) as u32;
                 match funct3 {
                     0x0 => {
-                        self.regs[rd] = ((self.dram.load(self.regs[rs1] as u32 + imm, 8).unwrap()
+                        self.regs[rd] = ((self.dram.load(self.regs[rs1].wrapping_add(imm), 8).unwrap()
                             << 24) as i32
                             >> 24) as u32;
                     }
                     0x1 => {
-                        self.regs[rd] = ((self.dram.load(self.regs[rs1] as u32 + imm, 16).unwrap()
+                        self.regs[rd] = ((self.dram.load(self.regs[rs1].wrapping_add(imm), 16).unwrap()
                             << 16) as i32
                             >> 16) as u32;
                     }
                     0x2 => {
                         debug!("lw {rd} {imm}({rs1})");
-                        self.regs[rd] = self.dram.load(self.regs[rs1] as u32 + imm, 32).unwrap();
+                        self.regs[rd] = self.dram.load(self.regs[rs1].wrapping_add(imm), 32).unwrap();
                     }
                     0x4 => {
                         self.regs[rd] =
-                            self.dram.load(self.regs[rs1] as u32 + imm, 8).unwrap() << 24;
+                            self.dram.load(self.regs[rs1].wrapping_add(imm), 8).unwrap() << 24;
                     }
                     0x5 => {
                         self.regs[rd] =
-                            self.dram.load(self.regs[rs1] as u32 + imm, 16).unwrap() << 16;
+                            self.dram.load(self.regs[rs1].wrapping_add(imm), 16).unwrap() << 16;
                     }
                     _ => {
                         panic!("invalid funct3")
@@ -141,18 +141,18 @@ impl Cpu {
                 match funct3 {
                     0x0 => {
                         self.dram
-                            .store(self.regs[rs1] + imm, 8, self.regs[rs2])
+                            .store(self.regs[rs1].wrapping_add(imm), 8, self.regs[rs2])
                             .unwrap();
                     }
                     0x1 => {
                         self.dram
-                            .store(self.regs[rs1] + imm, 16, self.regs[rs2])
+                            .store(self.regs[rs1].wrapping_add(imm), 16, self.regs[rs2])
                             .unwrap();
                     }
                     0x2 => {
                         debug!("sw {rs2} {imm}({rs1})");
                         self.dram
-                            .store(self.regs[rs1] + imm, 32, self.regs[rs2])
+                            .store(self.regs[rs1].wrapping_add(imm), 32, self.regs[rs2])
                             .unwrap();
                     }
                     _ => {
@@ -163,7 +163,7 @@ impl Cpu {
             0x33 => {
                 match funct3 {
                     0x0 => {
-                        if (inst & 0x4000_0000) > 0 {
+                        if (inst & 0x4000_0000) == 0 {
                             // add
                             self.regs[rd] = self.regs[rs1].wrapping_add(self.regs[rs2]);
                         } else {
