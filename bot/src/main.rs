@@ -1,7 +1,11 @@
 #![no_std]
 #![no_main]
 
-use core::{panic::PanicInfo, ptr};
+use core::panic::PanicInfo;
+
+use devices::Radar;
+
+mod devices;
 
 #[panic_handler]
 fn panic(_panic: &PanicInfo<'_>) -> ! {
@@ -18,26 +22,12 @@ pub enum Direction {
     DOWN,
 }
 
-#[inline(never)]
-fn cmd(dir: Direction) {
-    let dir = dir as u32;
-    unsafe { ptr::write(4 as *mut u32, dir) }
-}
-
 #[export_name = "main"]
 fn main() -> ! {
+    let (radar, driving) = devices::get_devices();
+    driving.set_speed(10);
     loop {
-        for _ in 0..5 {
-            cmd(Direction::LEFT)
-        }
-        for _ in 0..5 {
-            cmd(Direction::DOWN)
-        }
-        for _ in 0..5 {
-            cmd(Direction::RIGHT)
-        }
-        for _ in 0..5 {
-            cmd(Direction::UP)
-        }
+        let best_sector = (0..Radar::SECTOR_COUNT).max_by_key(|sector| radar.get_sector_value(*sector)).unwrap();
+        driving.set_heading(best_sector as u16 * 360 / Radar::SECTOR_COUNT as u16)
     }
 }
