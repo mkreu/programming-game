@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
+use core::{fmt::Write, panic::PanicInfo};
 
 use devices::Radar;
 
@@ -24,10 +24,17 @@ pub enum Direction {
 
 #[export_name = "main"]
 fn main() -> ! {
-    let (radar, driving) = devices::get_devices();
+    let (mut log, radar, driving) = devices::get_devices();
     driving.set_speed(10);
+    log.log_line("Hello World");
+    log.log_char('!');
+    log.log_char('\n');
     loop {
-        let best_sector = (0..Radar::SECTOR_COUNT).max_by_key(|sector| radar.get_sector_value(*sector)).unwrap();
+        let best_sector = (0..Radar::SECTOR_COUNT)
+            .max_by_key(|sector| radar.get_sector_value(*sector))
+            .unwrap();
+        writeln!(&mut log, "Best Sector: {}", best_sector).unwrap();
         driving.set_heading(best_sector as u16 * 360 / Radar::SECTOR_COUNT as u16)
     }
 }
+

@@ -1,8 +1,9 @@
+use color_eyre::Result;
+use cpu::instruction::Instruction;
 use cpu::Cpu;
 use dram::{Dram, DRAM_SIZE};
 use std::env;
 use std::fs;
-use color_eyre::Result;
 
 mod cpu;
 mod dram;
@@ -25,5 +26,29 @@ fn main() -> Result<()> {
 
     let cpu = Cpu::new(dram, entry);
 
-    tui::run(cpu)
+    run_plain(cpu);
+
+    //tui::run(cpu)
+    Ok(())
+}
+
+fn run_plain(mut cpu: Cpu) {
+    loop {
+        // 1. Fetch.
+        let inst = cpu.fetch();
+
+        // 2. Add 4 to the program counter.
+        cpu.pc = cpu.pc + 4;
+
+        // 3. Decode.
+        // 4. Execute.
+        cpu.execute(Instruction::parse(inst));
+
+        let print = cpu.dram.load(4, 32).unwrap();
+        cpu.dram.store(4, 32, 0).unwrap();
+
+        if print != 0 {
+            print!("{}", char::from_u32(print).unwrap());
+        }
+    }
 }
