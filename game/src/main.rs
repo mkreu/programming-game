@@ -8,6 +8,8 @@ use bevy::{
 use iyes_perf_ui::{PerfUiCompleteBundle, PerfUiPlugin};
 use noise::NoiseFn;
 
+mod cpu;
+
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, FrameTimeDiagnosticsPlugin, PerfUiPlugin))

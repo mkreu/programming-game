@@ -1,13 +1,10 @@
 use color_eyre::Result;
-use cpu::instruction::Instruction;
-use cpu::Cpu;
-use dram::{Dram, DRAM_SIZE};
+use emulator::cpu::instruction::Instruction;
+use emulator::cpu::Cpu;
+use emulator::dram::{Dram, DRAM_SIZE};
 use std::env;
 use std::fs;
 
-mod cpu;
-mod dram;
-mod tui;
 fn main() -> Result<()> {
     //tracing_subscriber::FmtSubscriber::builder()
     //    .with_max_level(LevelFilter::DEBUG)
