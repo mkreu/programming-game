@@ -9,6 +9,8 @@ mod devices;
 
 #[panic_handler]
 fn panic(_panic: &PanicInfo<'_>) -> ! {
+    let (mut log, _, _) = devices::get_devices();
+    writeln!(log, "{}", _panic).ok(); // Do not panic in panic
     loop {}
 }
 
@@ -26,15 +28,12 @@ pub enum Direction {
 fn main() -> ! {
     let (mut log, radar, driving) = devices::get_devices();
     driving.set_speed(10);
-    log.log_line("Hello World");
-    log.log_char('!');
-    log.log_char('\n');
     loop {
         let best_sector = (0..Radar::SECTOR_COUNT)
             .max_by_key(|sector| radar.get_sector_value(*sector))
             .unwrap();
         writeln!(&mut log, "Best Sector: {}", best_sector).unwrap();
-        driving.set_heading(best_sector as u16 * 360 / Radar::SECTOR_COUNT as u16)
+        driving.set_heading((best_sector as u16 * 2 + 1) * 180 / Radar::SECTOR_COUNT as u16)
     }
 }
 

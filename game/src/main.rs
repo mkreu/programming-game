@@ -1,10 +1,9 @@
 use std::f32::consts::PI;
 
 use bevy::{
-    diagnostic::FrameTimeDiagnosticsPlugin,
-    prelude::*,
-    sprite::{MaterialMesh2dBundle, Mesh2dHandle},
+    diagnostic::FrameTimeDiagnosticsPlugin, math::vec2, prelude::*, sprite::{MaterialMesh2dBundle, Mesh2dHandle}
 };
+use cpu::{cpu_system, spawn_cpu, Driving, Radar};
 use iyes_perf_ui::{PerfUiCompleteBundle, PerfUiPlugin};
 use noise::NoiseFn;
 
@@ -14,8 +13,12 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, FrameTimeDiagnosticsPlugin, PerfUiPlugin))
         .add_systems(Startup, setup)
-        .add_systems(Update, (draw_cursor, draw_collider /*draw_voxel_grid*/))
-        .add_systems(FixedUpdate, (voxel_collision, robot_movement))
+        .add_systems(Update, (draw_cursor, draw_collider, draw_radar_sectors /*draw_voxel_grid*/))
+        .add_systems(
+            FixedUpdate,
+            (radar_update, cpu_system, voxel_collision, robot_movement),
+        )
+        .add_systems(Startup, spawn_cpu)
         .run();
 }
 
@@ -44,7 +47,10 @@ fn draw_collider(query: Query<&Transform, With<Robot>>, mut gizmos: Gizmos) {
     }
 }
 
-fn draw_voxel_grid(query: Query<(&Transform, &InheritedVisibility), With<Voxel>>, mut gizmos: Gizmos) {
+fn draw_voxel_grid(
+    query: Query<(&Transform, &InheritedVisibility), With<Voxel>>,
+    mut gizmos: Gizmos,
+) {
     for voxel in query.iter() {
         if voxel.1.get() {
             gizmos.rect_2d(
@@ -54,6 +60,21 @@ fn draw_voxel_grid(query: Query<(&Transform, &InheritedVisibility), With<Voxel>>
                 Color::WHITE,
             );
         }
+    }
+}
+
+fn draw_radar_sectors(
+    mut query: Query<(&Radar, &Transform), (With<Robot>, Without<Voxel>)>,
+    mut gizmos: Gizmos,
+) {
+    let (radar, transf) = query.single_mut();
+    let robot_pos = transf.translation.xy();
+
+    for i in 0..16 {
+        let angle = i as f32 / 8. * PI;
+        gizmos.ray_2d(robot_pos, vec2(angle.sin(), angle.cos()) * 1e5, Color::GRAY);
+        let angle = angle + (PI / 16.);
+        gizmos.ray_2d(robot_pos, vec2(angle.cos(), angle.sin()) * radar.sectors[i] as f32, Color::PINK)
     }
 }
 
@@ -70,27 +91,46 @@ fn voxel_collision(
     }
 }
 
-fn robot_movement(
-    mut robot_query: Query<&mut Transform, (With<Robot>, Without<Voxel>)>,
+fn radar_update(
+    mut robot_query: Query<(&mut Radar, &Transform, &Driving), (With<Robot>, Without<Voxel>)>,
     voxel_query: Query<(&Voxel, &Transform, &InheritedVisibility), Without<Robot>>,
-    mut gizmos: Gizmos,
 ) {
-    let mut robot = robot_query.single_mut();
-    let robot_pos = robot.translation.xy();
+    let (mut radar, transf, _driving) = robot_query.single_mut();
+    let robot_pos = transf.translation.xy();
 
-    let dir = voxel_query
+    let sectors_f = voxel_query
         .iter()
         .filter(|v| v.0.material == VoxelMaterial::ORE && v.2.get())
         .map(|v| v.1.translation.xy() - robot_pos)
-        .map(|dir| dir / (dir.length_squared() * dir.length_squared()).max(1.))
-        .inspect(|dir| gizmos.line_2d(robot_pos, robot_pos + *dir * 50000., Color::BLACK))
-        .sum::<Vec2>();
+        .map(|dir| {
+            (
+                Vec2::X.angle_between(dir),
+                1. / dir.length_squared().max(1.),
+            )
+        })
+        .fold([0.; 16], |mut acc, (angle, value)| {
+            acc[((angle.to_degrees() / 22.5) +16.0) as usize % 16] += value;
+            acc
+        });
 
-    if dir.length_squared() > 0e-20 {
-        let dir = dir.normalize();
-        robot.rotation = Quat::from_rotation_z(-dir.angle_between(Vec2::Y));
-        robot.translation += Vec3::new(dir.x, dir.y, 0.0);
-    }
+    let sectors = sectors_f
+        .into_iter()
+        .map(|f| (f * 1e4) as u8)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+
+    radar.sectors = sectors;
+}
+
+fn robot_movement(
+    mut robot_query: Query<(&Driving, &mut Transform), (With<Robot>, Without<Voxel>)>,
+) {
+    let (driving, mut robot) = robot_query.single_mut();
+
+    let heading = (driving.heading as f32).to_radians();
+    robot.rotation = Quat::from_rotation_z(heading);
+    robot.translation += Vec3::new(heading.cos(), heading.sin(), 0.0) * (driving.speed as f32).min(1.);
 }
 
 fn manual_movement(
@@ -149,33 +189,6 @@ fn setup(
 
     commands.spawn(Camera2dBundle::default());
 
-    let rect_mesh = Mesh2dHandle(meshes.add(Rectangle::new(50.0, 25.0)));
-    let triangle_mesh = Mesh2dHandle(meshes.add(Triangle2d::new(
-        Vec2::Y * 25.0,
-        Vec2::new(-25.0, 0.0),
-        Vec2::new(25.0, 0.0),
-    )));
-
-    commands
-        .spawn((
-            Robot,
-            TransformBundle::default(),
-            InheritedVisibility::default(),
-        ))
-        .with_children(|cb| {
-            cb.spawn(MaterialMesh2dBundle {
-                mesh: rect_mesh,
-                material: materials.add(Color::YELLOW),
-                transform: Transform::from_xyz(0.0, -5.0, 0.0),
-                ..default()
-            });
-            cb.spawn(MaterialMesh2dBundle {
-                mesh: triangle_mesh,
-                material: materials.add(Color::YELLOW),
-                transform: Transform::from_xyz(0.0, 7.5, 0.0),
-                ..default()
-            });
-        });
     let voxel_mesh = Mesh2dHandle(meshes.add(Rectangle::new(
         VOXEL_RADIUS * 2.0 - 1.0,
         VOXEL_RADIUS * 2.0 - 1.0,
