@@ -3,7 +3,7 @@ use std::f32::consts::PI;
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin, math::vec2, prelude::*, sprite::{MaterialMesh2dBundle, Mesh2dHandle}
 };
-use cpu::{cpu_system, spawn_cpu, Driving, Radar};
+use cpu::{DrivingDevice, EmulatorPlugin, RadarDevice};
 use iyes_perf_ui::{PerfUiCompleteBundle, PerfUiPlugin};
 use noise::NoiseFn;
 
@@ -11,14 +11,13 @@ mod cpu;
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, FrameTimeDiagnosticsPlugin, PerfUiPlugin))
+        .add_plugins((DefaultPlugins, FrameTimeDiagnosticsPlugin, PerfUiPlugin, EmulatorPlugin))
         .add_systems(Startup, setup)
         .add_systems(Update, (draw_cursor, draw_collider, draw_radar_sectors /*draw_voxel_grid*/))
         .add_systems(
             FixedUpdate,
-            (radar_update, cpu_system, voxel_collision, robot_movement),
+            (radar_update, voxel_collision, robot_movement),
         )
-        .add_systems(Startup, spawn_cpu)
         .run();
 }
 
@@ -64,7 +63,7 @@ fn draw_voxel_grid(
 }
 
 fn draw_radar_sectors(
-    mut query: Query<(&Radar, &Transform), (With<Robot>, Without<Voxel>)>,
+    mut query: Query<(&RadarDevice, &Transform), (With<Robot>, Without<Voxel>)>,
     mut gizmos: Gizmos,
 ) {
     let (radar, transf) = query.single_mut();
@@ -92,7 +91,7 @@ fn voxel_collision(
 }
 
 fn radar_update(
-    mut robot_query: Query<(&mut Radar, &Transform, &Driving), (With<Robot>, Without<Voxel>)>,
+    mut robot_query: Query<(&mut RadarDevice, &Transform, &DrivingDevice), (With<Robot>, Without<Voxel>)>,
     voxel_query: Query<(&Voxel, &Transform, &InheritedVisibility), Without<Robot>>,
 ) {
     let (mut radar, transf, _driving) = robot_query.single_mut();
@@ -124,7 +123,7 @@ fn radar_update(
 }
 
 fn robot_movement(
-    mut robot_query: Query<(&Driving, &mut Transform), (With<Robot>, Without<Voxel>)>,
+    mut robot_query: Query<(&DrivingDevice, &mut Transform), (With<Robot>, Without<Voxel>)>,
 ) {
     let (driving, mut robot) = robot_query.single_mut();
 

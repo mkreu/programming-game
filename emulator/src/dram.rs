@@ -15,7 +15,7 @@ pub struct Dram {
 #[allow(dead_code)]
 impl Dram {
     /// Create a new `Dram` instance with default dram size.
-    pub fn new(code: Vec<u8>) -> (Dram, u32) {
+    pub fn new(code: &[u8]) -> (Dram, u32) {
         let elf = ElfBytes::<LittleEndian>::minimal_parse(&code).expect("failed to parse elf file");
 
         let all_load_phdrs = elf

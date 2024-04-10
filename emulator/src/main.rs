@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use emulator::cpu::instruction::Instruction;
 use emulator::cpu::Cpu;
-use emulator::dram::{Dram, DRAM_SIZE};
+use emulator::CpuBuilder;
 use std::env;
 use std::fs;
 
@@ -16,12 +16,7 @@ fn main() -> Result<()> {
         panic!("Usage: emulator <filename>");
     }
     let code = fs::read(&args[1])?;
-
-    let (mut dram, entry) = Dram::new(code);
-
-    dram.store(DRAM_SIZE - 4, 32, 4).unwrap();
-
-    let cpu = Cpu::new(dram, entry);
+    let cpu = CpuBuilder::default().build(&code);
 
     run_plain(cpu);
 
