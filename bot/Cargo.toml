@@ -9,4 +9,11 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+[[bin]]
+name = "bot"
+path = "src/main.rs"
+test = false
+doctest = false
+bench = false
+
 [dependencies]
