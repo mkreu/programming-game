@@ -18,14 +18,22 @@ pub enum Instruction {
         rs2: usize,
         imm: i32,
     },
-    B{
+    B {
         funct: BFunct,
         rs1: usize,
         rs2: usize,
         imm: i32,
     },
-    U{ funct: UFunct, rd: usize, imm: i32},
-    J{ funct: JFunct, rd: usize, imm: i32},
+    U {
+        funct: UFunct,
+        rd: usize,
+        imm: i32,
+    },
+    J {
+        funct: JFunct,
+        rd: usize,
+        imm: i32,
+    },
 }
 
 #[derive(Debug)]
@@ -84,7 +92,7 @@ pub enum UFunct {
 
 #[derive(Debug)]
 pub enum JFunct {
-    JAL
+    JAL,
 }
 
 impl Instruction {
@@ -181,9 +189,13 @@ impl Instruction {
                 use RFunct::*;
                 let funct7 = (inst & 0x4000_0000) > 0;
                 let funct = match funct3 {
-                    0x0 => if !funct7 {
-                        ADD
-                    }else {SUB},
+                    0x0 => {
+                        if !funct7 {
+                            ADD
+                        } else {
+                            SUB
+                        }
+                    }
                     0x1 => SLL,
                     0x2 => SLT,
                     0x3 => SLTU,
@@ -201,17 +213,30 @@ impl Instruction {
                         panic!("invalid funct3")
                     }
                 };
-                Self::R { funct, rd, rs1, rs2 }
+                Self::R {
+                    funct,
+                    rd,
+                    rs1,
+                    rs2,
+                }
             }
             0x37 => {
                 // lui
                 let imm = (inst & 0xfffff000) as i32;
-                Self::U { funct: UFunct::LUI, rd, imm }
+                Self::U {
+                    funct: UFunct::LUI,
+                    rd,
+                    imm,
+                }
             }
             0x17 => {
                 // auipc
                 let imm = (inst & 0xfffff000) as i32;
-                Self::U { funct: UFunct::AUIPC, rd, imm }
+                Self::U {
+                    funct: UFunct::AUIPC,
+                    rd,
+                    imm,
+                }
             }
             0x63 => {
                 use BFunct::*;
@@ -235,12 +260,22 @@ impl Instruction {
                         panic!("invalid funct3")
                     }
                 };
-                Self::B { funct, rs1, rs2, imm }
+                Self::B {
+                    funct,
+                    rs1,
+                    rs2,
+                    imm,
+                }
             }
             0x67 => {
                 // jalr
                 let imm = (inst & 0xfff0_0000) as i32 >> 20;
-                Self::I { funct: IFunct::JALR, rd, rs1, imm }
+                Self::I {
+                    funct: IFunct::JALR,
+                    rd,
+                    rs1,
+                    imm,
+                }
             }
             0x6f => {
                 // imm[20|10:1|11|19:12] = inst[31|30:21|20|19:12]
@@ -250,7 +285,11 @@ impl Instruction {
                     | ((inst >> 20) & 0x7fe); // imm[10:1]
                 let imm = imm as i32;
 
-                    Self::J { funct: JFunct::JAL, rd, imm}
+                Self::J {
+                    funct: JFunct::JAL,
+                    rd,
+                    imm,
+                }
             }
             _ => {
                 dbg!("opcode not implemented yet");

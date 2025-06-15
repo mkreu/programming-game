@@ -42,8 +42,7 @@ impl Dram {
             println!("vaddr: {vaddr:x}");
             println!("offset: {offset:x}");
             println!("filesz: {filesz:x}");
-            mem[vaddr..vaddr + filesz]
-                .copy_from_slice(&code[offset..offset + filesz]);
+            mem[vaddr..vaddr + filesz].copy_from_slice(&code[offset..offset + filesz]);
         }
 
         let entry = elf.ehdr.e_entry as u32;
@@ -71,15 +70,15 @@ impl Dram {
             8 => {
                 self.store8(addr, value);
                 Ok(())
-            },
+            }
             16 => {
                 self.store16(addr, value);
                 Ok(())
-            },
+            }
             32 => {
                 self.store32(addr, value);
                 Ok(())
-            },
+            }
             _ => Err(()),
         }
     }

@@ -125,11 +125,7 @@ impl Cpu {
                     self.regs[rd] = self.regs[rs1].wrapping_add_signed(imm);
                 }
                 instruction::IFunct::SLTI => {
-                    self.regs[rd] = if (self.regs[rs1] as i32) < imm {
-                        1
-                    } else {
-                        0
-                    };
+                    self.regs[rd] = if (self.regs[rs1] as i32) < imm { 1 } else { 0 };
                 }
                 instruction::IFunct::SLTIU => {
                     self.regs[rd] = if self.regs[rs1] < (imm as u32) { 1 } else { 0 };

@@ -14,4 +14,3 @@ impl CpuBuilder {
         Cpu::new(dram, entry)
     }
 }
-
