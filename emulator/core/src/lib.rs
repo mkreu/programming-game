@@ -5,6 +5,7 @@ pub mod cpu;
 pub mod dram;
 pub mod io;
 
+#[derive(Default)]
 pub struct CpuBuilder {}
 
 impl CpuBuilder {
@@ -14,8 +15,3 @@ impl CpuBuilder {
     }
 }
 
-impl Default for CpuBuilder {
-    fn default() -> Self {
-        Self {}
-    }
-}

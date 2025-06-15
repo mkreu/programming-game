@@ -16,7 +16,7 @@ pub struct Dram {
 impl Dram {
     /// Create a new `Dram` instance with default dram size.
     pub fn new(code: &[u8]) -> (Dram, u32) {
-        let elf = ElfBytes::<LittleEndian>::minimal_parse(&code).expect("failed to parse elf file");
+        let elf = ElfBytes::<LittleEndian>::minimal_parse(code).expect("failed to parse elf file");
 
         let all_load_phdrs = elf
             .segments()
@@ -68,9 +68,18 @@ impl Dram {
         trace!("store(addr: {addr:x}, size: {size})");
         let addr = addr;
         match size {
-            8 => Ok(self.store8(addr, value)),
-            16 => Ok(self.store16(addr, value)),
-            32 => Ok(self.store32(addr, value)),
+            8 => {
+                self.store8(addr, value);
+                Ok(())
+            },
+            16 => {
+                self.store16(addr, value);
+                Ok(())
+            },
+            32 => {
+                self.store32(addr, value);
+                Ok(())
+            },
             _ => Err(()),
         }
     }
@@ -84,16 +93,16 @@ impl Dram {
     /// Load 2 bytes from the little-endian dram.
     fn load16(&self, addr: u32) -> u32 {
         let index = addr as usize;
-        return (self.dram[index] as u32) | ((self.dram[index + 1] as u32) << 8);
+        (self.dram[index] as u32) | ((self.dram[index + 1] as u32) << 8)
     }
 
     /// Load 4 bytes from the little-endian dram.
     fn load32(&self, addr: u32) -> u32 {
         let index = addr as usize;
-        return (self.dram[index] as u32)
+        (self.dram[index] as u32)
             | ((self.dram[index + 1] as u32) << 8)
             | ((self.dram[index + 2] as u32) << 16)
-            | ((self.dram[index + 3] as u32) << 24);
+            | ((self.dram[index + 3] as u32) << 24)
     }
 
     /// Store a byte to the little-endian dram.

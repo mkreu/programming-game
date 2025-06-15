@@ -16,14 +16,14 @@ impl Cpu {
         let mut cpu = Self {
             regs: [0; 32],
             pc: entry,
-            dram: dram,
+            dram,
         };
         cpu.regs[2] = DRAM_SIZE - 8;
-        return cpu;
+        cpu
     }
     #[allow(dead_code)]
     pub fn fetch(&self) -> u32 {
-        return self.dram.load(self.pc, 32).unwrap();
+        self.dram.load(self.pc, 32).unwrap()
     }
     pub fn execute(&mut self, inst: Instruction) {
         self.regs[0] = 0; // Simulate hard wired x0
@@ -125,7 +125,7 @@ impl Cpu {
                     self.regs[rd] = self.regs[rs1].wrapping_add_signed(imm);
                 }
                 instruction::IFunct::SLTI => {
-                    self.regs[rd] = if (self.regs[rs1] as i32) < (imm as i32) {
+                    self.regs[rd] = if (self.regs[rs1] as i32) < imm {
                         1
                     } else {
                         0

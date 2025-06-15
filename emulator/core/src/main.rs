@@ -28,7 +28,7 @@ fn run_plain(mut cpu: Cpu) {
         let inst = cpu.fetch();
 
         // 2. Add 4 to the program counter.
-        cpu.pc = cpu.pc + 4;
+        cpu.pc += 4;
 
         // 3. Decode.
         // 4. Execute.

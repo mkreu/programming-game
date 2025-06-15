@@ -90,7 +90,7 @@ impl<const T: usize> IOMemoryLayout for [u8; T] {
     }
 
     fn into_bytes(&self, mem: &mut [u8]) {
-        mem.copy_from_slice(&*self);
+        mem.copy_from_slice(self);
     }
 }
 
@@ -122,7 +122,7 @@ pub struct CpuComponentBuilder {
 
 impl CpuComponentBuilder {
     fn build(self, code: &[u8]) -> CpuComponent {
-        let (mut dram, entry) = Dram::new(&code);
+        let (mut dram, entry) = Dram::new(code);
 
         dram.store(self.mem_size as u32 - 4, 32, 4).unwrap();
 
@@ -178,7 +178,7 @@ impl IODevice for RadarDevice {
     }
 
     fn read(&self) -> Self::Layout {
-        self.sectors.clone()
+        self.sectors
     }
 }
 
@@ -265,7 +265,7 @@ pub fn cpu_system(mut cpu_query: Query<&mut CpuComponent>) {
             let inst = cpu.fetch();
 
             // 2. Add 4 to the program counter.
-            cpu.pc = cpu.pc + 4;
+            cpu.pc += 4;
 
             // 3. Decode.
             // 4. Execute.

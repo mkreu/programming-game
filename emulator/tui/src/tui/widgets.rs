@@ -181,7 +181,7 @@ impl Widget for GameWidget<'_> {
             .marker(Marker::Dot)
             .paint(|ctx| {
                 ctx.draw(&Points {
-                    coords: &self.pos,
+                    coords: self.pos,
                     color: Color::Blue,
                 })
             });
