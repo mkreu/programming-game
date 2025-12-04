@@ -1,5 +1,6 @@
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin,
+    input::mouse::MouseWheel,
     math::{vec2, cubic_splines::{CubicCardinalSpline, CubicCurve, CyclicCubicGenerator}},
     prelude::*,
 };
@@ -11,6 +12,7 @@ fn main() {
             FrameTimeDiagnosticsPlugin::default(),
         ))
         .add_systems(Startup, setup)
+        .add_systems(Update, (drive_car, update_camera))
         .run();
 }
 
@@ -18,6 +20,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     commands.spawn(Camera2d);
 
@@ -64,6 +67,17 @@ fn setup(
         Mesh2d(meshes.add(outer_kerb)),
         MeshMaterial2d(materials.add(ColorMaterial::default())),
         Transform::from_xyz(0.0, 0.0, 0.1),
+    ));
+    
+    // Spawn the player car
+    commands.spawn((
+        Sprite::from_image(asset_server.load("blue_car.png")),
+        Transform::from_xyz(300.0, 0.0, 1.0).with_scale(Vec3::splat(0.1)),
+        Car {
+            velocity: Vec2::ZERO,
+            angle: 0.0,
+            speed: 0.0,
+        },
     ));
 }
 
@@ -233,4 +247,97 @@ fn create_kerb_meshes(spline: &CubicCurve<Vec2>, track_width: f32, segments: usi
     outer_mesh.insert_indices(bevy::mesh::Indices::U32(outer_indices));
     
     (inner_mesh, outer_mesh)
+}
+
+#[derive(Component)]
+struct Car {
+    velocity: Vec2,
+    angle: f32,
+    speed: f32,
+}
+
+fn drive_car(
+    mut query: Query<(&mut Transform, &mut Car)>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+) {
+    for (mut transform, mut car) in &mut query {
+        let dt = time.delta_secs();
+        
+        // Car physics parameters
+        let acceleration = 150.0;
+        let braking = 200.0;
+        let max_speed = 500.0;
+        let reverse_speed = 100.0;
+        let turn_speed = 3.0;
+        let drag: f32 = 0.99;
+        
+        // Forward/Backward
+        if keyboard.pressed(KeyCode::KeyW) {
+            car.speed += acceleration * dt;
+            car.speed = car.speed.min(max_speed);
+        }
+        if keyboard.pressed(KeyCode::KeyS) {
+            car.speed -= braking * dt;
+            car.speed = car.speed.max(-reverse_speed);
+        }
+        
+        // Apply drag
+        car.speed *= drag.powf(dt * 60.0_f32);
+        
+        // Stop if very slow
+        if car.speed.abs() < 0.1 {
+            car.speed = 0.0;
+        }
+        
+        // Steering (only when moving)
+        if car.speed.abs() > 0.1 {
+            if keyboard.pressed(KeyCode::KeyA) {
+                car.angle -= turn_speed * dt * (car.speed / max_speed);
+            }
+            if keyboard.pressed(KeyCode::KeyD) {
+                car.angle += turn_speed * dt * (car.speed / max_speed);
+            }
+        }
+        
+        // Update velocity based on angle and speed
+        car.velocity = Vec2::new(car.angle.sin(), car.angle.cos()) * car.speed;
+        
+        // Update position
+        transform.translation.x += car.velocity.x * dt;
+        transform.translation.y += car.velocity.y * dt;
+        
+        // Update rotation
+        transform.rotation = Quat::from_rotation_z(-car.angle);
+    }
+}
+
+fn update_camera(
+    car_query: Query<&Transform, With<Car>>,
+    mut camera_query: Query<(&mut Transform, &mut Projection), (With<Camera2d>, Without<Car>)>,
+    mut scroll_events: MessageReader<MouseWheel>,
+) {
+    let Ok(car_transform) = car_query.single() else {
+        return;
+    };
+    let Ok((mut camera_transform, mut projection)) = camera_query.single_mut() else {
+        return;
+    };
+    
+    // Handle zoom with mouse wheel
+    if let Projection::Orthographic(ref mut ortho) = *projection {
+        for event in scroll_events.read() {
+            let zoom_delta = match event.unit {
+                bevy::input::mouse::MouseScrollUnit::Line => event.y * 0.1,
+                bevy::input::mouse::MouseScrollUnit::Pixel => event.y * 0.001,
+            };
+            
+            ortho.scale *= 1.0 - zoom_delta;
+            ortho.scale = ortho.scale.clamp(0.2, 5.0);
+        }
+    }
+    
+    // Follow the car
+    camera_transform.translation.x = car_transform.translation.x;
+    camera_transform.translation.y = car_transform.translation.y;
 }
