@@ -69,7 +69,7 @@ fn setup(
         Transform::from_xyz(0.0, 0.0, 0.1),
     ));
     
-    // Spawn the player car
+    // Spawn the player car with wheels as children
     commands.spawn((
         Sprite::from_image(asset_server.load("blue_car_without_wheels.png")),
         Transform::from_xyz(300.0, 0.0, 1.0).with_scale(Vec3::splat(0.1)),
@@ -78,7 +78,20 @@ fn setup(
             angle: 0.0,
             speed: 0.0,
         },
-    ));
+    )).with_children(|parent| {
+        // Front left wheel
+        parent.spawn((
+            Sprite::from_image(asset_server.load("wheel.png")),
+            Transform::from_xyz(-38.0, 72.0, 0.1),
+            Wheel,
+        ));
+        // Front right wheel
+        parent.spawn((
+            Sprite::from_image(asset_server.load("wheel.png")),
+            Transform::from_xyz(38.0, 72.0, 0.1),
+            Wheel,
+        ));
+    });
 }
 
 fn create_track_mesh(spline: &CubicCurve<Vec2>, track_width: f32, segments: usize) -> Mesh {
@@ -256,12 +269,16 @@ struct Car {
     speed: f32,
 }
 
+#[derive(Component)]
+struct Wheel;
+
 fn drive_car(
-    mut query: Query<(&mut Transform, &mut Car)>,
+    mut car_query: Query<(&mut Transform, &mut Car, &Children)>,
+    mut wheel_query: Query<&mut Transform, (With<Wheel>, Without<Car>)>,
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
 ) {
-    for (mut transform, mut car) in &mut query {
+    for (mut transform, mut car, children) in &mut car_query {
         let dt = time.delta_secs();
         
         // Car physics parameters
@@ -291,12 +308,15 @@ fn drive_car(
         }
         
         // Steering (only when moving)
+        let mut wheel_angle = 0.0;
         if car.speed.abs() > 0.1 {
             if keyboard.pressed(KeyCode::KeyA) {
                 car.angle -= turn_speed * dt * (car.speed / max_speed);
+                wheel_angle = -0.5; // Left turn
             }
             if keyboard.pressed(KeyCode::KeyD) {
                 car.angle += turn_speed * dt * (car.speed / max_speed);
+                wheel_angle = 0.5; // Right turn
             }
         }
         
@@ -309,6 +329,13 @@ fn drive_car(
         
         // Update rotation
         transform.rotation = Quat::from_rotation_z(-car.angle);
+        
+        // Update wheel rotation
+        for child in children.iter() {
+            if let Ok(mut wheel_transform) = wheel_query.get_mut(child) {
+                wheel_transform.rotation = Quat::from_rotation_z(-wheel_angle);
+            }
+        }
     }
 }
 
@@ -333,7 +360,7 @@ fn update_camera(
             };
             
             ortho.scale *= 1.0 - zoom_delta;
-            ortho.scale = ortho.scale.clamp(0.2, 5.0);
+            ortho.scale = ortho.scale.clamp(0.1, 5.0);
         }
     }
     
