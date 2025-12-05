@@ -71,7 +71,7 @@ fn setup(
     
     // Spawn the player car
     commands.spawn((
-        Sprite::from_image(asset_server.load("blue_car.png")),
+        Sprite::from_image(asset_server.load("blue_car_without_wheels.png")),
         Transform::from_xyz(300.0, 0.0, 1.0).with_scale(Vec3::splat(0.1)),
         Car {
             velocity: Vec2::ZERO,
