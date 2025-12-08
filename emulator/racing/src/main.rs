@@ -1,8 +1,9 @@
 use std::f32::consts::PI;
 
+use avian2d::prelude::*;
 use bevy::{
-    color::palettes::css::WHITE, diagnostic::FrameTimeDiagnosticsPlugin, input::mouse::MouseWheel,
-    math::ops::tan, prelude::*,
+    color::palettes::css::{RED, WHITE, YELLOW}, diagnostic::FrameTimeDiagnosticsPlugin,
+    input::mouse::MouseWheel, prelude::*,
 };
 use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiDefaultEntries};
 
@@ -14,8 +15,11 @@ fn main() {
             DefaultPlugins,
             FrameTimeDiagnosticsPlugin::default(),
             PerfUiPlugin,
+            PhysicsPlugins::default(),
+            PhysicsDebugPlugin::default(),
         ))
-        .add_systems(Startup, (setup,track::setup))
+        .insert_resource(Gravity::ZERO)
+        .add_systems(Startup, (setup, track::setup))
         .add_systems(Startup, set_default_zoom.after(setup))
         .add_systems(FixedUpdate, drive_car)
         .add_systems(Update, (update_camera, draw_gizmos))
@@ -24,10 +28,7 @@ fn main() {
 
 const WHEEL_BASE: f32 = 3.5;
 
-fn setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-) {
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(PerfUiDefaultEntries::default());
 
     // Spawn a camera; we'll set a custom default zoom once in `set_default_zoom`.
@@ -41,55 +42,56 @@ fn setup(
         .spawn((
             Transform::from_xyz(start_point.x, start_point.y, 1.0),
             Visibility::default(),
-            Car {
-                velocity: Vec2::ZERO,
-                angle: 0.0,
-                speed: 0.0,
-            },
+            RigidBody::Dynamic,
+            LinearDamping(0.8),
+            AngularDamping(0.8),
+            Car { steer: 0.0 },
         ))
         .with_children(|parent| {
+            parent.spawn((
+                Collider::rectangle(1.8, 5.0),
+                Transform::from_xyz(0.0, 2.1, 0.0),
+            ));
+
             parent.spawn((
                 Sprite::from_image(asset_server.load("blue_car_without_wheels.png")),
                 Transform::from_xyz(0.0, 2.05, 0.1).with_scale(sprite_scale),
             ));
 
             // Front left wheel
-            parent.spawn((
-                Transform::from_xyz(-0.75, 3.5, 0.1),
-                Visibility::default(),
-                Wheel,
-            )).with_children(|parent| {
-                parent.spawn(
-                    (
+            parent
+                .spawn((
+                    Transform::from_xyz(-0.75, 3.5, 0.1),
+                    Visibility::default(),
+                    FrontWheel,
+                ))
+                .with_children(|parent| {
+                    parent.spawn((
                         Sprite::from_image(asset_server.load("wheel.png")),
                         Transform::default()
                             .with_scale(sprite_scale)
                             .with_rotation(Quat::from_rotation_z(0.0)),
-                    ),
-                );
-            });
+                    ));
+                });
             // Front right wheel
-            parent.spawn((
-                Transform::from_xyz(0.75, 3.5, 0.1),
-                Visibility::default(),
-                Wheel,
-            )).with_children(|parent| {
-                parent.spawn(
-                    (
+            parent
+                .spawn((
+                    Transform::from_xyz(0.75, 3.5, 0.1),
+                    Visibility::default(),
+                    FrontWheel,
+                ))
+                .with_children(|parent| {
+                    parent.spawn((
                         Sprite::from_image(asset_server.load("wheel.png")),
                         Transform::default()
                             .with_scale(sprite_scale)
                             .with_rotation(Quat::from_rotation_z(PI)),
-                    ),
-                );
-            });
+                    ));
+                });
         });
 }
 
-
-fn set_default_zoom(
-    mut camera_query: Query<&mut Projection, With<Camera2d>>,
-) {
+fn set_default_zoom(mut camera_query: Query<&mut Projection, With<Camera2d>>) {
     let Ok(mut projection) = camera_query.single_mut() else {
         return;
     };
@@ -101,78 +103,110 @@ fn set_default_zoom(
 
 #[derive(Component)]
 struct Car {
-    velocity: Vec2,
-    angle: f32,
-    speed: f32,
+    steer: f32,
 }
 
 #[derive(Component)]
-struct Wheel;
+struct FrontWheel;
 
 fn drive_car(
-    mut car_query: Query<(&mut Transform, &mut Car, &Children)>,
-    mut wheel_query: Query<&mut Transform, (With<Wheel>, Without<Car>)>,
+    mut car_query: Query<(&Transform, &mut Car, &Children, Forces)>,
+    mut wheel_query: Query<&mut Transform, (With<FrontWheel>, Without<Car>)>,
+    mut gizmos: Gizmos,
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
 
-    for (mut transform, mut car, children) in &mut car_query {
+    for (transform, mut car, children, mut forces) in &mut car_query {
         // Car physics parameters
-        let acceleration = 50.0;
-        let braking = 70.0;
-        let max_speed = 100.0; // m/s
-        let reverse_speed = 100.0;
-        let drag: f32 = 0.99;
+        let acceleration = 30.0;
+        let braking = 50.0;
+
+        let position = transform.translation.xy();
+        let forward = transform.up().xy().normalize();
+        let left = forward.perp();
 
         // Forward/Backward
-        if keyboard.pressed(KeyCode::KeyW) {
-            car.speed += acceleration * dt;
-            car.speed = car.speed.min(max_speed);
-        }
         if keyboard.pressed(KeyCode::KeyS) {
-            car.speed -= braking * dt;
-            car.speed = car.speed.max(-reverse_speed);
+            forces.apply_linear_acceleration(forward * -braking);
+            gizmos.arrow_2d(
+                position,
+                position + forward * -braking * 0.3,
+                WHITE,
+            );
+        } else if keyboard.pressed(KeyCode::KeyW) {
+            forces.apply_linear_acceleration(forward * acceleration);
+            gizmos.arrow_2d(
+                position,
+                position + forward * acceleration * 0.3,
+                WHITE,
+            );
         }
 
-        // Apply drag
-        car.speed *= drag.powf(dt * 60.0_f32);
 
-        // Stop if very slow
-        if car.speed.abs() < 0.1 {
-            car.speed = 0.0;
+        let max_steer = PI / 6.0; // Max steering angle (30 degrees);
+        if keyboard.pressed(KeyCode::KeyA) {
+            car.steer -= max_steer * dt * 5.0 / (1.0 + forces.linear_velocity().length() * 0.1);
+        }
+        else if keyboard.pressed(KeyCode::KeyD) {
+            car.steer += max_steer * dt * 5.0 / (1.0 + forces.linear_velocity().length() * 0.1);
+        } else {
+            // Return wheels to center when no input
+            car.steer -= car.steer.signum() * max_steer * dt * 5.0 / (1.0 + forces.linear_velocity().length() * 0.1);
+        }
+        car.steer = car.steer.clamp(-max_steer, max_steer);
+        if car.steer.abs() < 0.001 {
+            car.steer = 0.0;
         }
 
-        let mut wheel_angle = 0.0;
+        let wheel_pos = position + forward * WHEEL_BASE;
 
-        if car.speed.abs() > 0.3 {
-            let steer_factor = 0.5/ (1.0 + 0.01 * car.speed.abs()).powf(2.0);
-            let turn_radius = WHEEL_BASE / tan(steer_factor);
-            let angular_velocity = car.speed / turn_radius;
-            if keyboard.pressed(KeyCode::KeyA) {
-                car.angle -= angular_velocity * dt;
-                wheel_angle = -steer_factor; // Left turn
-            }
-            if keyboard.pressed(KeyCode::KeyD) {
-                car.angle += angular_velocity * dt;
-                wheel_angle = steer_factor; // Left turn
-            }
+        let wheel_forward = Vec2::from_angle(-car.steer).rotate(forward);
+        gizmos.arrow_2d(
+            wheel_pos,
+            wheel_pos + wheel_forward * 2.0,
+            YELLOW,
+        );
+
+        let wheel_left = wheel_forward.perp();
+        gizmos.arrow_2d(
+            wheel_pos,
+            wheel_pos + wheel_left * 1.0,
+            YELLOW,
+        );
+
+        if forces.linear_velocity().length() > 1.0 {
+
+            let front_force = -forces.linear_velocity().dot(wheel_left).clamp(-5.0, 5.0) * wheel_left;
+            let back_force = -forces.linear_velocity().dot(left).clamp(-5.0, 5.0) * left;
+
+            gizmos.arrow_2d(
+                wheel_pos,
+                wheel_pos + front_force,
+                RED,
+            );
+            gizmos.arrow_2d(
+                position,
+                position + back_force,
+                RED,
+            );
+
+            forces.apply_linear_acceleration_at_point(
+                front_force,
+                wheel_pos,
+            );
+
+            forces.apply_linear_acceleration_at_point(
+                back_force,
+                position,
+            );
         }
-
-        // Update velocity based on angle and speed
-        car.velocity = Vec2::new(car.angle.sin(), car.angle.cos()) * car.speed;
-
-        // Update position
-        transform.translation.x += car.velocity.x * dt;
-        transform.translation.y += car.velocity.y * dt;
-
-        // Update rotation
-        transform.rotation = Quat::from_rotation_z(-car.angle);
 
         // Update wheel rotation
         for child in children.iter() {
             if let Ok(mut wheel_transform) = wheel_query.get_mut(child) {
-                wheel_transform.rotation = Quat::from_rotation_z(-wheel_angle);
+                wheel_transform.rotation = Quat::from_rotation_z(-car.steer);
             }
         }
     }
@@ -180,14 +214,14 @@ fn drive_car(
 
 fn draw_gizmos(car_query: Query<(&Transform, &Car)>, mut gizmos: Gizmos) {
     for (transform, _car) in &car_query {
-        gizmos.cross(transform.to_isometry(), 1.0, WHITE);
+        gizmos.cross(transform.to_isometry(), 0.2, RED);
         gizmos.cross(
             Isometry3d::new(
                 transform.translation + transform.up() * WHEEL_BASE,
                 transform.rotation,
             ),
-            1.0,
-            WHITE,
+            0.2,
+            RED,
         );
     }
 }
