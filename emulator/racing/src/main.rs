@@ -21,9 +21,12 @@ fn main() {
             PhysicsDebugPlugin::default(),
         ))
         .insert_resource(Gravity::ZERO)
-        .insert_resource(Time::<Fixed>::from_duration(std::time::Duration::from_secs_f32(1.0 / 200.0)))
+        .insert_resource(Time::<Fixed>::from_duration(
+            std::time::Duration::from_secs_f32(1.0 / 200.0),
+        ))
         .add_systems(Startup, (setup, track::setup))
         .add_systems(Startup, set_default_zoom.after(setup))
+        .add_systems(Update, (handle_car_input, update_ai_driver))
         .add_systems(FixedUpdate, apply_car_forces)
         .add_systems(Update, (update_camera, draw_gizmos))
         .run();
@@ -38,61 +41,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Spawn a camera; we'll set a custom default zoom once in `set_default_zoom`.
     commands.spawn(Camera2d);
 
-    let sprite_scale = Vec3::splat(0.008);
     let start_point = track::first_point();
-
-    // Spawn the player car with wheels as children
-    commands
-        .spawn((
-            Transform::from_xyz(start_point.x, start_point.y, 1.0),
-            Visibility::default(),
-            RigidBody::Dynamic,
-            LinearDamping(0.1),
-            //AngularDamping(0.8),
-            Car { steer: 0.0 },
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Collider::rectangle(1.25, 2.0),
-                Transform::from_xyz(0.0, 0.66, 0.0),
-            ));
-
-            parent.spawn((
-                Sprite::from_image(asset_server.load("kart.png")),
-                Transform::from_xyz(0.0, 0.66, 0.1).with_scale(sprite_scale),
-            ));
-
-            // Front left wheel
-            parent
-                .spawn((
-                    Transform::from_xyz(-WHEEL_TRACK / 2.0, WHEEL_BASE, 0.1),
-                    Visibility::default(),
-                    FrontWheel,
-                ))
-                .with_children(|parent| {
-                    parent.spawn((
-                        Sprite::from_image(asset_server.load("kart_wheel.png")),
-                        Transform::default()
-                            .with_scale(sprite_scale)
-                            .with_rotation(Quat::from_rotation_z(0.0)),
-                    ));
-                });
-            // Front right wheel
-            parent
-                .spawn((
-                    Transform::from_xyz(WHEEL_TRACK / 2.0, WHEEL_BASE, 0.1),
-                    Visibility::default(),
-                    FrontWheel,
-                ))
-                .with_children(|parent| {
-                    parent.spawn((
-                        Sprite::from_image(asset_server.load("kart_wheel.png")),
-                        Transform::default()
-                            .with_scale(sprite_scale)
-                            .with_rotation(Quat::from_rotation_z(PI)),
-                    ));
-                });
-        });
+    spawn_car(&mut commands, &asset_server, start_point, true);
 }
 
 fn set_default_zoom(mut camera_query: Query<&mut Projection, With<Camera2d>>) {
@@ -105,39 +55,103 @@ fn set_default_zoom(mut camera_query: Query<&mut Projection, With<Camera2d>>) {
     }
 }
 
+fn spawn_car(commands: &mut Commands, asset_server: &AssetServer, position: Vec2, is_ai: bool) {
+    let sprite_scale = Vec3::splat(0.008);
+
+    let mut entity = commands.spawn((
+        Transform::from_xyz(position.x, position.y, 1.0),
+        Visibility::default(),
+        RigidBody::Dynamic,
+        LinearDamping(0.1),
+        Car {
+            steer: 0.0,
+            accelerator: 0.0,
+            brake: 0.0,
+        },
+    ));
+
+    if is_ai {
+        entity.insert(AIDriver { target_t: 0.0 });
+    }
+
+    entity.with_children(|parent| {
+        parent.spawn((
+            Collider::rectangle(1.25, 2.0),
+            Transform::from_xyz(0.0, 0.66, 0.0),
+        ));
+
+        parent.spawn((
+            Sprite::from_image(asset_server.load("kart.png")),
+            Transform::from_xyz(0.0, 0.66, 0.1).with_scale(sprite_scale),
+        ));
+
+        // Front left wheel
+        parent
+            .spawn((
+                Transform::from_xyz(-WHEEL_TRACK / 2.0, WHEEL_BASE, 0.1),
+                Visibility::default(),
+                FrontWheel,
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    Sprite::from_image(asset_server.load("kart_wheel.png")),
+                    Transform::default()
+                        .with_scale(sprite_scale)
+                        .with_rotation(Quat::from_rotation_z(0.0)),
+                ));
+            });
+        // Front right wheel
+        parent
+            .spawn((
+                Transform::from_xyz(WHEEL_TRACK / 2.0, WHEEL_BASE, 0.1),
+                Visibility::default(),
+                FrontWheel,
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    Sprite::from_image(asset_server.load("kart_wheel.png")),
+                    Transform::default()
+                        .with_scale(sprite_scale)
+                        .with_rotation(Quat::from_rotation_z(PI)),
+                ));
+            });
+    });
+}
+
 #[derive(Component)]
 struct Car {
     steer: f32,
+    accelerator: f32,
+    brake: f32,
+}
+
+#[derive(Component)]
+struct AIDriver {
+    target_t: f32,
 }
 
 #[derive(Component)]
 struct FrontWheel;
 
-fn apply_car_forces(
-    mut car_query: Query<(&Transform, &mut Car, &Children, Forces)>,
-    mut wheel_query: Query<&mut Transform, (With<FrontWheel>, Without<Car>)>,
-    mut gizmos: Gizmos,
+fn handle_car_input(
+    mut car_query: Query<&mut Car, Without<AIDriver>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    for (transform, mut car, children, mut forces) in &mut car_query {
-        // Car physics parameters
-        let acceleration = 30.0;
-        let braking = 50.0;
+    for mut car in &mut car_query {
+        // Update accelerator and brake
+        car.accelerator = if keyboard.pressed(KeyCode::KeyW) {
+            1.0
+        } else {
+            0.0
+        };
+        car.brake = if keyboard.pressed(KeyCode::KeyS) {
+            1.0
+        } else {
+            0.0
+        };
 
-        let position = transform.translation.xy();
-        let forward = transform.up().xy().normalize();
-        let left = forward.perp();
-
-        // Forward/Backward
-        if keyboard.pressed(KeyCode::KeyS) {
-            forces.apply_linear_acceleration(forward * -braking);
-            gizmos.arrow_2d(position, position + forward * -braking * 0.3, WHITE);
-        } else if keyboard.pressed(KeyCode::KeyW) {
-            forces.apply_linear_acceleration(forward * acceleration);
-            gizmos.arrow_2d(position, position + forward * acceleration * 0.3, WHITE);
-        }
-
-        let max_steer = PI / 6.0; // Max steering angle (30 degrees);
+        // Update steering
+        let max_steer = PI / 6.0; // Max steering angle (30 degrees)
         let steer_rate = 0.05 * car.steer.abs().max(0.1); // Steering speed
         if keyboard.pressed(KeyCode::KeyA) {
             car.steer = (-max_steer).max(car.steer - steer_rate);
@@ -150,6 +164,180 @@ fn apply_car_forces(
             } else {
                 (car.steer + steer_rate).min(0.0)
             };
+        }
+    }
+}
+
+fn update_ai_driver(
+    mut ai_query: Query<(&Transform, &mut Car, &mut AIDriver, &LinearVelocity)>,
+    track: Option<Res<track::TrackSpline>>,
+    mut gizmos: Gizmos,
+) {
+    let Some(track) = track else {
+        return;
+    };
+
+    let domain = track.spline.domain();
+    let t_max = domain.end();
+
+    for (transform, mut car, mut ai, velocity) in &mut ai_query {
+        let car_pos = transform.translation.xy();
+        let car_forward = transform.up().xy().normalize();
+        let car_speed = velocity.length();
+
+        // Instead of finding closest point, smoothly advance along the track
+        // This prevents jumps and ensures forward progress only
+
+        // Search a small window around current target_t to find where we actually are
+        let mut best_t = ai.target_t;
+        let mut best_score = f32::MAX;
+
+        let window_samples = 50;
+        let window_size = t_max * 0.1; // Search +/- 10% of track
+        for i in 0..window_samples {
+            let offset = (i as f32 / window_samples as f32) * window_size - window_size * 0.5;
+            let test_t = (ai.target_t + offset + t_max) % t_max;
+            let test_pos = track.spline.position(test_t);
+            let dist = car_pos.distance(test_pos);
+
+            // Prefer points ahead (positive offset) over points behind
+            let forward_bias = if offset > 0.0 { 0.0 } else { 2.0 };
+            let score = dist + forward_bias;
+
+            if score < best_score {
+                best_score = score;
+                best_t = test_t;
+            }
+        }
+
+        // Dynamic lookahead based on speed
+        let base_lookahead = 2.0;
+        let speed_factor = (car_speed * 0.5).max(1.0);
+        let lookahead_distance = base_lookahead * speed_factor;
+
+        let mut current_t = best_t;
+        let mut traveled = 0.0;
+
+        // Walk along the spline until we've traveled lookahead_distance
+        while traveled < lookahead_distance {
+            let step = t_max / 2000.0; // Smaller steps for smoother distance calculation
+            let next_t = (current_t + step) % t_max;
+            let p1 = track.spline.position(current_t);
+            let p2 = track.spline.position(next_t);
+            traveled += p1.distance(p2);
+            current_t = next_t;
+        }
+
+        ai.target_t = current_t;
+
+        // Calculate curvature ahead to determine braking
+        let curvature_lookahead = 15.0; // Look further ahead for braking
+        let mut curve_t = best_t;
+        let mut curve_traveled = 0.0;
+
+        // Sample points ahead to measure curvature
+        let mut max_curvature: f32 = 0.0;
+
+        while curve_traveled < curvature_lookahead {
+            let step = t_max / 2000.0;
+            let next_t = (curve_t + step) % t_max;
+            let prev_t = if curve_t < step {
+                t_max + curve_t - step
+            } else {
+                curve_t - step
+            };
+
+            // Calculate curvature using three points
+            let p_prev = track.spline.position(prev_t);
+            let p_curr = track.spline.position(curve_t);
+            let p_next = track.spline.position(next_t);
+
+            let v1 = (p_curr - p_prev).normalize();
+            let v2 = (p_next - p_curr).normalize();
+
+            // Angle change indicates curvature
+            let angle_change = v1.angle_to(v2).abs();
+            max_curvature = max_curvature.max(angle_change);
+
+            curve_traveled += p_curr.distance(p_next);
+            curve_t = next_t;
+        }
+
+        let target_pos = track.spline.position(ai.target_t);
+
+        // Debug visualization
+        gizmos.circle_2d(target_pos, 0.5, bevy::color::palettes::css::BLUE);
+        gizmos.line_2d(car_pos, target_pos, bevy::color::palettes::css::AQUA);
+
+        // Draw car forward direction
+        gizmos.arrow_2d(
+            car_pos,
+            car_pos + car_forward * 3.0,
+            bevy::color::palettes::css::LIME,
+        );
+
+        // Calculate steering to target
+        let to_target = (target_pos - car_pos).normalize();
+        let angle_to_target = car_forward.angle_to(to_target);
+
+        // Smooth proportional steering with lower gain
+        // Negate because physics uses -car.steer
+        let max_steer = PI / 6.0;
+        let desired_steer = (-angle_to_target * 0.8).clamp(-max_steer, max_steer);
+        let steer_blend = 0.1; // How quickly to change steering (lower = smoother)
+        car.steer = car.steer * (1.0 - steer_blend) + desired_steer * steer_blend;
+
+        // Determine acceleration/braking based on curvature ahead
+        let curvature_threshold_brake = 0.05; // Start braking at tight turns
+        let curvature_threshold_caution = 0.02; // Reduce throttle at moderate turns
+
+        if max_curvature > curvature_threshold_brake {
+            // Sharp turn ahead - brake
+            car.accelerator = 0.0;
+            car.brake = ((max_curvature - curvature_threshold_brake) * 10.0).min(1.0);
+        } else if max_curvature > curvature_threshold_caution {
+            // Moderate turn - reduce throttle
+            let throttle_reduction = (max_curvature - curvature_threshold_caution)
+                / (curvature_threshold_brake - curvature_threshold_caution);
+            car.accelerator = (1.0 - throttle_reduction * 0.7).max(0.3) * 0.1;
+            car.brake = 0.0;
+        } else {
+            // Straight or gentle curve - full throttle
+            car.accelerator = 1.0 * 0.1;
+            car.brake = 0.0;
+        }
+    }
+}
+
+fn apply_car_forces(
+    mut car_query: Query<(&Transform, &mut Car, &Children, Forces)>,
+    mut wheel_query: Query<&mut Transform, (With<FrontWheel>, Without<Car>)>,
+    mut gizmos: Gizmos,
+) {
+    for (transform, car, children, mut forces) in &mut car_query {
+        // Car physics parameters
+        let acceleration = 30.0;
+        let braking = 50.0;
+
+        let position = transform.translation.xy();
+        let forward = transform.up().xy().normalize();
+        let left = forward.perp();
+
+        // Apply acceleration/braking based on car state
+        if car.brake > 0.0 {
+            forces.apply_linear_acceleration(forward * -braking * car.brake);
+            gizmos.arrow_2d(
+                position,
+                position + forward * -braking * car.brake * 0.3,
+                WHITE,
+            );
+        } else if car.accelerator > 0.0 {
+            forces.apply_linear_acceleration(forward * acceleration * car.accelerator);
+            gizmos.arrow_2d(
+                position,
+                position + forward * acceleration * car.accelerator * 0.3,
+                WHITE,
+            );
         }
 
         // Front left
@@ -169,9 +357,21 @@ fn apply_car_forces(
             &mut gizmos,
         );
         // Rear left
-        apply_wheel_force(position, left * -WHEEL_TRACK / 2.0, forward, &mut forces, &mut gizmos);
+        apply_wheel_force(
+            position,
+            left * -WHEEL_TRACK / 2.0,
+            forward,
+            &mut forces,
+            &mut gizmos,
+        );
         // Rear right
-        apply_wheel_force(position, left * WHEEL_TRACK / 2.0, forward, &mut forces, &mut gizmos);
+        apply_wheel_force(
+            position,
+            left * WHEEL_TRACK / 2.0,
+            forward,
+            &mut forces,
+            &mut gizmos,
+        );
 
         // Update wheel rotation
         for child in children.iter() {
@@ -228,7 +428,7 @@ fn update_camera(
     mut camera_query: Query<(&mut Transform, &mut Projection), (With<Camera2d>, Without<Car>)>,
     mut scroll_events: MessageReader<MouseWheel>,
 ) {
-    let Ok(car_transform) = car_query.single() else {
+    let Some(car_transform) = car_query.iter().next() else {
         return;
     };
     let Ok((mut camera_transform, mut projection)) = camera_query.single_mut() else {

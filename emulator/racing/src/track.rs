@@ -1,5 +1,10 @@
 use bevy::prelude::*;
 
+#[derive(Resource)]
+pub(crate) struct TrackSpline {
+    pub spline: CubicCurve<Vec2>,
+}
+
 pub(crate) fn first_point() -> Vec2 {
     let control_points: Vec<Vec2> = read_control_points_from_csv("racing/assets/spielberg.csv");
     control_points[0]
@@ -22,6 +27,11 @@ pub(crate) fn setup(
     let spline = CubicBSpline::new(control_points.clone())
         .to_curve_cyclic()
         .expect("Failed to create cyclic curve");
+
+    // Store spline as a resource for AI to use
+    commands.insert_resource(TrackSpline {
+        spline: spline.clone(),
+    });
 
     // Generate track mesh
     let track_mesh = create_track_mesh(&spline, 12.0, 1000);
