@@ -42,7 +42,13 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2d);
 
     let start_point = track::first_point();
-    spawn_car(&mut commands, &asset_server, start_point, true);
+    spawn_car(&mut commands, &asset_server, start_point + Vec2::new(0.0, 2.0), true);
+    spawn_car(&mut commands, &asset_server, start_point + Vec2::new(3.0, -2.0), true);
+    spawn_car(&mut commands, &asset_server, start_point + Vec2::new(6.0, 2.0), true);
+    spawn_car(&mut commands, &asset_server, start_point + Vec2::new(9.0, -2.0), true);
+    spawn_car(&mut commands, &asset_server, start_point + Vec2::new(12.0, 2.0), true);
+    spawn_car(&mut commands, &asset_server, start_point + Vec2::new(15.0, -2.0), true);
+
 }
 
 fn set_default_zoom(mut camera_query: Query<&mut Projection, With<Camera2d>>) {
@@ -59,7 +65,7 @@ fn spawn_car(commands: &mut Commands, asset_server: &AssetServer, position: Vec2
     let sprite_scale = Vec3::splat(0.008);
 
     let mut entity = commands.spawn((
-        Transform::from_xyz(position.x, position.y, 1.0),
+        Transform::from_xyz(position.x, position.y, 1.0).with_rotation(Quat::from_axis_angle(Vec3::Z, PI / 2.0)),
         Visibility::default(),
         RigidBody::Dynamic,
         LinearDamping(0.1),
