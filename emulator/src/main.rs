@@ -1,8 +1,5 @@
-use emulator_core as emulator;
-
-use emulator::cpu::instruction::Instruction;
-use emulator::cpu::Cpu;
 use emulator::CpuBuilder;
+use emulator::cpu::{Dram, Hart, Instruction, RamLike};
 use std::env;
 use std::fs;
 
@@ -17,25 +14,25 @@ fn main() {
         panic!("Usage: emulator <filename>");
     }
     let code = fs::read(&args[1]).unwrap();
-    let cpu = CpuBuilder::default().build(&code);
+    let (cpu, dram) = CpuBuilder::default().build(&code);
 
-    run_plain(cpu);
+    run_plain(cpu, dram);
 }
 
-fn run_plain(mut cpu: Cpu) {
+fn run_plain(mut cpu: Hart, mut dram: Dram) {
     loop {
         // 1. Fetch.
-        let inst = cpu.fetch();
+        let inst = cpu.fetch(&mut dram);
 
         // 2. Add 4 to the program counter.
         cpu.pc += 4;
 
         // 3. Decode.
         // 4. Execute.
-        cpu.execute(Instruction::parse(inst));
+        cpu.execute(Instruction::parse(inst), &mut dram);
 
-        let print = cpu.dram.load(4, 32).unwrap();
-        cpu.dram.store(4, 32, 0).unwrap();
+        let print = dram.load(4, 32).unwrap();
+        dram.store(4, 32, 0).unwrap();
 
         if print != 0 {
             print!("{}", char::from_u32(print).unwrap());

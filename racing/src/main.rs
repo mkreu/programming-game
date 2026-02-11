@@ -7,6 +7,7 @@ use bevy::{
     input::mouse::MouseWheel,
     prelude::*,
 };
+use emulator::bevy::EmulatorPlugin;
 use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiDefaultEntries};
 
 use racing::track;
@@ -24,6 +25,7 @@ fn main() {
             PerfUiPlugin,
             PhysicsPlugins::default(),
             PhysicsDebugPlugin::default(),
+            EmulatorPlugin,
         ))
         .insert_resource(Gravity::ZERO)
         .insert_resource(Time::<Fixed>::from_duration(

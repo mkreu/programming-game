@@ -2327,9 +2327,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
 
 [[package]]
-name = "emulator_core"
+name = "emulator"
 version = "0.1.0"
 dependencies = [
+ "bevy",
  "elf",
  "tracing",
  "tracing-subscriber",
@@ -4490,6 +4491,7 @@ version = "0.1.0"
 dependencies = [
  "avian2d",
  "bevy",
+ "emulator",
  "iyes_perf_ui",
  "rfd",
  "serde",

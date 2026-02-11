@@ -1,5 +1,5 @@
 [package]
-name = "emulator_core"
+name = "emulator"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,3 +8,4 @@ edition = "2024"
 elf = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+bevy = { version = "0.17", default-features = false}
