@@ -3,25 +3,12 @@
 
 use core::{fmt::Write, panic::PanicInfo};
 
-mod log;
-
-use log::Log;
+use bot::log;
 
 #[panic_handler]
 fn panic(_panic: &PanicInfo<'_>) -> ! {
     writeln!(log(), "{}", _panic).ok(); // Do not panic in panic
     loop {}
-}
-
-pub const DRAM_SIZE: u32 = 1024 * 64;
-
-const SLOT1: usize = 0x100;
-//const SLOT2: usize = 0x200;
-//const SLOT3: usize = 0x300;
-//const SLOT4: usize = 0x400;
-
-fn log() -> Log {
-    Log::bind(SLOT1)
 }
 
 #[unsafe(export_name = "main")]

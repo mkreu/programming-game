@@ -9,11 +9,24 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+[lib]
+test = false
+doctest = false
+bench = false
+
 [[bin]]
-name = "bot"
-path = "src/main.rs"
+name = "bottles"
+path = "src/bin/bottles.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "car"
+path = "src/bin/car.rs"
 test = false
 doctest = false
 bench = false
 
 [dependencies]
+bevy_math = { version = "0.17", default-features = false, features = ["libm"] }

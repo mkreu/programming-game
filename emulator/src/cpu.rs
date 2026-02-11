@@ -346,22 +346,55 @@ impl Dram {
     }
 }
 
-pub struct Mmu {
-    pub dram: Dram,
+pub struct Mmu<'a> {
+    pub dram: &'a mut Dram,
+    pub devices: &'a mut [&'a mut dyn RamLike],
 }
 
-impl RamLike for Mmu {
+impl<'a> Mmu<'a> {
+    pub fn new(dram: &'a mut Dram, devices: &'a mut [&'a mut dyn RamLike]) -> Self {
+        Self { dram, devices }
+    }
+}
+
+impl RamLike for Mmu<'_> {
     fn load(&self, addr: u32, size: u32) -> Result<u32, ()> {
-        self.dram.load(addr, size)
+        if addr >= 0x1000 {
+            self.dram.load(addr, size)
+        } else {
+            if let Some(device) = self.devices.get((addr as usize & 0x100) >> 2) {
+                device.load(addr, size)
+            } else {
+                Err(())
+            }
+        }
     }
 
     fn store(&mut self, addr: u32, size: u32, value: u32) -> Result<(), ()> {
-        if (addr, size) == (0x100, 32) {
-            // Handle MMIO for printing a character.
-            print!("{}", char::from_u32(value).unwrap());
-            Ok(())
-        } else {
+        if addr >= 0x1000 {
             self.dram.store(addr, size, value)
+        } else {
+            if let Some(device) = self.devices.get_mut(((addr as usize & 0x100) >> 8) - 1) {
+                device.store(addr, size, value)
+            } else {
+                Err(())
+            }
         }
+    }
+}
+
+pub struct LogDevice;
+
+impl RamLike for LogDevice {
+    fn load(&self, _addr: u32, _size: u32) -> Result<u32, ()> {
+        Ok(0)
+    }
+
+    fn store(&mut self, _addr: u32, size: u32, value: u32) -> Result<(), ()> {
+        if size != 32 {
+            return Err(());
+        }
+        print!("{}", char::from_u32(value).unwrap());
+        Ok(())
     }
 }

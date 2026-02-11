@@ -1,5 +1,5 @@
 use emulator::CpuBuilder;
-use emulator::cpu::{Hart, Instruction, Mmu};
+use emulator::cpu::{Dram, Hart, Instruction, LogDevice, Mmu, RamLike};
 use std::env;
 use std::fs;
 
@@ -15,12 +15,14 @@ fn main() {
     }
     let code = fs::read(&args[1]).unwrap();
     let (cpu, dram) = CpuBuilder::default().build(&code);
-    let mmu = Mmu { dram };
 
-    run_plain(cpu, mmu);
+    run_plain(cpu, dram);
 }
 
-fn run_plain(mut cpu: Hart, mut mmu: Mmu) {
+fn run_plain(mut cpu: Hart, mut dram: Dram) {
+    let mut log = LogDevice;
+    let mut devices: Vec<&mut dyn RamLike> = vec![&mut log];
+    let mut mmu = Mmu::new(&mut dram, &mut devices);
     loop {
         // 1. Fetch.
         let inst = cpu.fetch(&mmu);
