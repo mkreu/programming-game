@@ -1,6 +1,7 @@
 [workspace]
 members = ["racing", "emulator"]
 resolver = "3"
+exclude = ["bot"]
 
 
 # Enable a small amount of optimization in debug mode

@@ -1,5 +1,5 @@
 use emulator::CpuBuilder;
-use emulator::cpu::{Dram, Hart, Instruction, RamLike};
+use emulator::cpu::{Hart, Instruction, Mmu};
 use std::env;
 use std::fs;
 
@@ -15,27 +15,21 @@ fn main() {
     }
     let code = fs::read(&args[1]).unwrap();
     let (cpu, dram) = CpuBuilder::default().build(&code);
+    let mmu = Mmu { dram };
 
-    run_plain(cpu, dram);
+    run_plain(cpu, mmu);
 }
 
-fn run_plain(mut cpu: Hart, mut dram: Dram) {
+fn run_plain(mut cpu: Hart, mut mmu: Mmu) {
     loop {
         // 1. Fetch.
-        let inst = cpu.fetch(&mut dram);
+        let inst = cpu.fetch(&mut mmu);
 
         // 2. Add 4 to the program counter.
         cpu.pc += 4;
 
         // 3. Decode.
         // 4. Execute.
-        cpu.execute(Instruction::parse(inst), &mut dram);
-
-        let print = dram.load(4, 32).unwrap();
-        dram.store(4, 32, 0).unwrap();
-
-        if print != 0 {
-            print!("{}", char::from_u32(print).unwrap());
-        }
+        cpu.execute(Instruction::parse(inst), &mut mmu);
     }
 }

@@ -348,7 +348,7 @@ impl Dram {
 }
 
 pub struct Mmu {
-    dram: Dram,
+    pub dram: Dram,
 }
 
 impl RamLike for Mmu {
@@ -357,6 +357,12 @@ impl RamLike for Mmu {
     }
 
     fn store(&mut self, addr: u32, size: u32, value: u32) -> Result<(), ()> {
-        self.dram.store(addr, size, value)
+        if (addr, size) == (0x100, 32) {
+            // Handle MMIO for printing a character.
+            print!("{}", char::from_u32(value).unwrap());
+            Ok(())
+        } else {
+            self.dram.store(addr, size, value)
+        }
     }
 }
