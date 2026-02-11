@@ -1,12 +1,10 @@
-[workspace]
-members = ["core", "game", "tui", "racing"]
-resolver = "3"
+[package]
+name = "emulator_core"
+version = "0.1.0"
+edition = "2024"
 
 
-# Enable a small amount of optimization in debug mode
-#[profile.dev]
-#opt-level = 1
-
-# Enable high optimizations for dependencies (incl. Bevy), but not for our code:
-[profile.dev.package."*"]
-opt-level = 3
+[dependencies]
+elf = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
