@@ -27,11 +27,9 @@ fn run_plain(mut cpu: Hart, mut dram: Dram) {
         // 1. Fetch.
         let inst = cpu.fetch(&mmu);
 
-        // 2. Add 4 to the program counter.
-        cpu.pc += 4;
-
-        // 3. Decode.
-        // 4. Execute.
-        cpu.execute(Instruction::parse(inst), &mut mmu);
+        // 2. Decode.
+        let (decoded, len) = Instruction::parse_with_len(inst);
+        // 3. Execute.
+        cpu.execute(decoded, len, &mut mmu);
     }
 }

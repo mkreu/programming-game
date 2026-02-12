@@ -61,12 +61,10 @@ pub fn cpu_system(mut cpu_query: Query<&mut CpuComponent>) {
             // 1. Fetch.
             let inst = cpu.hart.fetch(&mmu);
 
-            // 2. Add 4 to the program counter.
-            cpu.hart.pc += 4;
-
-            // 3. Decode.
-            // 4. Execute.
-            cpu.hart.execute(Instruction::parse(inst), &mut mmu);
+            // 2. Decode.
+            let (decoded, len) = Instruction::parse_with_len(inst);
+            // 3. Execute.
+            cpu.hart.execute(decoded, len, &mut mmu);
         }
     }
 }
