@@ -8,4 +8,4 @@ edition = "2024"
 elf = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-bevy = { version = "0.17", default-features = false}
+bevy = { version = "0.18", default-features = false}

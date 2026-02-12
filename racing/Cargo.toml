@@ -12,12 +12,10 @@ name = "track-editor"
 path = "src/bin/editor.rs"
 
 [dependencies]
-avian2d = "0.4.1"
-bevy = "0.17"
-iyes_perf_ui = { git = "https://github.com/mgi388/iyes_perf_ui", branch = "bevy-0.17" }
+avian2d = "0.5.0"
+bevy = "0.18"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 rfd = "0.15"
 
 emulator = { path = "../emulator" }
-

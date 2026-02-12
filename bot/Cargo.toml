@@ -29,4 +29,5 @@ doctest = false
 bench = false
 
 [dependencies]
-bevy_math = { version = "0.17", default-features = false, features = ["libm"] }
+bevy_math = { version = "0.18", default-features = false, features = ["libm"] }
+

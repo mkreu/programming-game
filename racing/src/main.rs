@@ -3,13 +3,12 @@ use std::f32::consts::PI;
 use avian2d::prelude::{forces::ForcesItem, *};
 use bevy::{
     color::palettes::css::{GREEN, RED, WHITE, YELLOW},
-    diagnostic::FrameTimeDiagnosticsPlugin,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::MouseWheel,
     prelude::*,
 };
 use emulator::bevy::{CpuComponent, EmulatorPlugin, cpu_system};
 use emulator::cpu::LogDevice;
-use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiDefaultEntries};
 
 use racing::devices::{CarControlsDevice, CarStateDevice};
 use racing::track;
@@ -28,7 +27,6 @@ fn main() {
         .add_plugins((
             DefaultPlugins,
             FrameTimeDiagnosticsPlugin::default(),
-            PerfUiPlugin,
             PhysicsPlugins::default(),
             PhysicsDebugPlugin,
             EmulatorPlugin,
@@ -49,7 +47,7 @@ fn main() {
                 apply_car_forces,
             ),
         )
-        .add_systems(Update, (update_camera, draw_gizmos))
+        .add_systems(Update, (update_fps_counter, update_camera, draw_gizmos))
         .run();
 }
 
@@ -109,7 +107,23 @@ fn setup_track(
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>, track_path: Res<TrackPath>) {
-    commands.spawn(PerfUiDefaultEntries::default());
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(8.0),
+            left: px(8.0),
+            padding: UiRect::axes(px(8.0), px(4.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+        Text::new("FPS: --"),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
+        TextColor(WHITE.into()),
+        FpsCounterText,
+    ));
 
     // Spawn a camera; we'll set a custom default zoom once in `set_default_zoom`.
     commands.spawn(Camera2d);
@@ -142,6 +156,25 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, track_path: Res
             start_point + *offset,
             driver,
         );
+    }
+}
+
+#[derive(Component)]
+struct FpsCounterText;
+
+fn update_fps_counter(
+    diagnostics: Res<DiagnosticsStore>,
+    mut query: Query<&mut Text, With<FpsCounterText>>,
+) {
+    let Ok(mut text) = query.single_mut() else {
+        return;
+    };
+
+    if let Some(fps) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|value| value.smoothed())
+    {
+        text.0 = format!("FPS: {fps:>3.0}");
     }
 }
 
