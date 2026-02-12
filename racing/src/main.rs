@@ -10,7 +10,7 @@ use bevy::{
 use emulator::bevy::{CpuComponent, EmulatorPlugin, cpu_system};
 use emulator::cpu::LogDevice;
 
-use racing::devices::{CarControlsDevice, CarStateDevice};
+use racing::devices::{CarControlsDevice, CarStateDevice, SplineDevice};
 use racing::track;
 use racing::track_format::TrackFile;
 
@@ -36,7 +36,7 @@ fn main() {
             std::time::Duration::from_secs_f32(1.0 / 200.0),
         ))
         .insert_resource(TrackPath(track_path))
-        .add_systems(Startup, (setup, setup_track))
+        .add_systems(Startup, (setup_track, setup.after(setup_track)))
         .add_systems(Startup, set_default_zoom.after(setup))
         .add_systems(Update, (handle_car_input, update_ai_driver))
         .add_systems(
@@ -106,7 +106,7 @@ fn setup_track(
     ));
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>, track_path: Res<TrackPath>) {
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>, track_path: Res<TrackPath>, track_spline: Res<track::TrackSpline>) {
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -155,6 +155,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, track_path: Res
             &asset_server,
             start_point + *offset,
             driver,
+            &track_spline,
         );
     }
 }
@@ -198,6 +199,7 @@ fn spawn_car(
     asset_server: &AssetServer,
     position: Vec2,
     driver: DriverType,
+    track_spline: &track::TrackSpline,
 ) {
     let sprite_scale = Vec3::splat(0.008);
 
@@ -221,15 +223,16 @@ fn spawn_car(
             entity.insert(AIDriver { target_t: 0.0 });
         }
         DriverType::Emulator => {
-            // Create per-car devices: slot0=Log, slot1=CarState, slot2=CarControls
+            // Create per-car devices: slot0=Log, slot1=CarState, slot2=CarControls, slot3=Spline
             let devices: Vec<Box<dyn emulator::cpu::RamLike>> = vec![
                 Box::new(LogDevice),
                 Box::new(CarStateDevice::default()),
                 Box::new(CarControlsDevice::default()),
+                Box::new(SplineDevice::new(track_spline)),
             ];
-            let cpu = CpuComponent::new(BOT_ELF, devices, 5000);
+            let cpu = CpuComponent::new(BOT_ELF, devices, 10000);
             entity.insert((
-                EmulatorDriver { target_t: 0.0 },
+                EmulatorDriver,
                 cpu,
             ));
         }
@@ -292,9 +295,7 @@ struct AIDriver {
 }
 
 #[derive(Component)]
-struct EmulatorDriver {
-    target_t: f32,
-}
+struct EmulatorDriver;
 
 #[derive(Component)]
 struct FrontWheel;
@@ -481,64 +482,18 @@ fn update_emulator_driver(
     mut emu_query: Query<(
         &Transform,
         &LinearVelocity,
-        &mut EmulatorDriver,
         &mut CpuComponent,
-    )>,
-    track: Option<Res<track::TrackSpline>>,
+    ), With<EmulatorDriver>>,
 ) {
-    let Some(track) = track else {
-        return;
-    };
-
-    let domain = track.spline.domain();
-    let t_max = domain.end();
-
-    for (transform, velocity, mut emu, mut cpu) in &mut emu_query {
+    for (transform, velocity, mut cpu) in &mut emu_query {
         let car_pos = transform.translation.xy();
         let car_forward = transform.up().xy().normalize();
         let car_speed = velocity.length();
 
-        // Same spline-walk logic as update_ai_driver to find current position
-        let mut best_t = emu.target_t;
-        let mut best_score = f32::MAX;
-
-        let window_samples = 50;
-        let window_size = t_max * 0.1;
-        for i in 0..window_samples {
-            let offset = (i as f32 / window_samples as f32) * window_size - window_size * 0.5;
-            let test_t = (emu.target_t + offset + t_max) % t_max;
-            let test_pos = track.spline.position(test_t);
-            let dist = car_pos.distance(test_pos);
-            let forward_bias = if offset > 0.0 { 0.0 } else { 2.0 };
-            let score = dist + forward_bias;
-            if score < best_score {
-                best_score = score;
-                best_t = test_t;
-            }
-        }
-
-        // Dynamic lookahead based on speed
-        let base_lookahead = 2.0;
-        let speed_factor = (car_speed * 0.5).max(1.0);
-        let lookahead_distance = base_lookahead * speed_factor;
-
-        let mut current_t = best_t;
-        let mut traveled = 0.0;
-        while traveled < lookahead_distance {
-            let step = t_max / 2000.0;
-            let next_t = (current_t + step) % t_max;
-            let p1 = track.spline.position(current_t);
-            let p2 = track.spline.position(next_t);
-            traveled += p1.distance(p2);
-            current_t = next_t;
-        }
-
-        emu.target_t = current_t;
-        let target_pos = track.spline.position(emu.target_t);
-
-        // Write state into the CarStateDevice (device index 1 = slot at 0x200)
+        // Write basic physics state into the CarStateDevice (device index 1 = slot at 0x200)
+        // The bot now handles all spline logic itself via SplineDevice
         if let Some(state_dev) = cpu.device_as_mut::<CarStateDevice>(1) {
-            state_dev.update(car_speed, car_pos, car_forward, target_pos);
+            state_dev.update(car_speed, car_pos, car_forward);
         }
     }
 }

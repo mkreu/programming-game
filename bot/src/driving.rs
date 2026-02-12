@@ -48,8 +48,6 @@ pub struct CarState {
     position_y: *const f32,
     forward_x: *const f32,
     forward_y: *const f32,
-    target_x: *const f32,
-    target_y: *const f32,
 }
 
 impl CarState {
@@ -60,8 +58,6 @@ impl CarState {
             position_y: (slot + 0x08) as *const f32,
             forward_x: (slot + 0x0C) as *const f32,
             forward_y: (slot + 0x10) as *const f32,
-            target_x: (slot + 0x14) as *const f32,
-            target_y: (slot + 0x18) as *const f32,
         }
     }
     pub fn speed(&self) -> f32 {
@@ -73,7 +69,37 @@ impl CarState {
     pub fn forward(&self) -> Vec2 {
         unsafe { Vec2::new(ptr::read_volatile(self.forward_x), ptr::read_volatile(self.forward_y)) }
     }
-    pub fn target(&self) -> Vec2 {
-        unsafe { Vec2::new(ptr::read_volatile(self.target_x), ptr::read_volatile(self.target_y)) }
-    }    
+}
+
+pub struct SplineQuery {
+    t: *mut f32,
+    x: *const f32,
+    y: *const f32,
+    t_max: *const f32,
+}
+
+impl SplineQuery {
+    pub const fn bind(slot: usize) -> Self {
+        Self {
+            t: (slot + 0x00) as *mut f32,
+            x: (slot + 0x04) as *const f32,
+            y: (slot + 0x08) as *const f32,
+            t_max: (slot + 0x0C) as *const f32,
+        }
+    }
+
+    /// Query the spline at position t and return the resulting coordinates.
+    pub fn query(&mut self, t: f32) -> Vec2 {
+        unsafe {
+            ptr::write_volatile(self.t, t);
+            Vec2::new(ptr::read_volatile(self.x), ptr::read_volatile(self.y))
+        }
+    }
+
+    /// Read the maximum t value (spline domain end).
+    pub fn t_max(&self) -> f32 {
+        unsafe {
+            ptr::read_volatile(self.t_max)
+        }
+    }
 }

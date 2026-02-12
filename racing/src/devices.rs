@@ -3,6 +3,8 @@ use std::any::Any;
 use bevy::prelude::*;
 use emulator::cpu::RamLike;
 
+use crate::track::TrackSpline;
+
 /// Memory-mapped device that provides car state to the RISC-V bot.
 /// Mapped at SLOT2 (0x200-0x2FF). The bot reads from this device.
 ///
@@ -12,15 +14,13 @@ use emulator::cpu::RamLike;
 ///   0x08: position_y
 ///   0x0C: forward_x
 ///   0x10: forward_y
-///   0x14: target_x
-///   0x18: target_y
 pub struct CarStateDevice {
-    data: [u8; 28], // 7 × f32
+    data: [u8; 20], // 5 × f32
 }
 
 impl Default for CarStateDevice {
     fn default() -> Self {
-        Self { data: [0u8; 28] }
+        Self { data: [0u8; 20] }
     }
 }
 
@@ -31,14 +31,12 @@ impl CarStateDevice {
     }
 
     /// Write the full car state from the simulation.
-    pub fn update(&mut self, speed: f32, position: Vec2, forward: Vec2, target: Vec2) {
+    pub fn update(&mut self, speed: f32, position: Vec2, forward: Vec2) {
         self.write_f32(0x00, speed);
         self.write_f32(0x04, position.x);
         self.write_f32(0x08, position.y);
         self.write_f32(0x0C, forward.x);
         self.write_f32(0x10, forward.y);
-        self.write_f32(0x14, target.x);
-        self.write_f32(0x18, target.y);
     }
 }
 
@@ -197,6 +195,85 @@ impl RamLike for CarControlsDevice {
                 }
             }
             _ => Err(()),
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Memory-mapped device for spline interpolation queries.
+/// Mapped at SLOT4 (0x400-0x4FF). The bot writes a `t` parameter and reads back the interpolated position.
+///
+/// Layout (all f32, little-endian):
+///   0x00: t (write) - parameter to sample the spline at
+///   0x04: x (read)  - resulting X coordinate of sampled position
+///   0x08: y (read)  - resulting Y coordinate of sampled position
+///   0x0C: t_max (read) - maximum value of t (spline domain end)
+pub struct SplineDevice {
+    spline: CubicCurve<Vec2>,
+    t_max: f32,
+    last_t: f32,
+    last_position: Vec2,
+}
+
+impl SplineDevice {
+    pub fn new(track_spline: &TrackSpline) -> Self {
+        let domain = track_spline.spline.domain();
+        let t_max = domain.end();
+        Self {
+            spline: track_spline.spline.clone(),
+            t_max,
+            last_t: 0.0,
+            last_position: Vec2::ZERO,
+        }
+    }
+}
+
+impl RamLike for SplineDevice {
+    fn load(&self, addr: u32, size: u32) -> Result<u32, ()> {
+        if size != 32 {
+            return Err(());
+        }
+        
+        let addr = addr as usize;
+        match addr {
+            0x04 => {
+                // Read X coordinate
+                Ok(u32::from_le_bytes(self.last_position.x.to_le_bytes()))
+            }
+            0x08 => {
+                // Read Y coordinate
+                Ok(u32::from_le_bytes(self.last_position.y.to_le_bytes()))
+            }
+            0x0C => {
+                // Read t_max
+                Ok(u32::from_le_bytes(self.t_max.to_le_bytes()))
+            }
+            _ => Ok(0),
+        }
+    }
+
+    fn store(&mut self, addr: u32, size: u32, value: u32) -> Result<(), ()> {
+        if size != 32 {
+            return Err(());
+        }
+        
+        let addr = addr as usize;
+        match addr {
+            0x00 => {
+                // Write t parameter, compute and cache the position
+                let t = f32::from_le_bytes(value.to_le_bytes());
+                self.last_t = t;
+                self.last_position = self.spline.position(t);
+                Ok(())
+            }
+            _ => Ok(()), // Ignore writes to other addresses
         }
     }
 
