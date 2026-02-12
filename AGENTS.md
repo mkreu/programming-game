@@ -11,11 +11,13 @@ There is also a native (Rust-side) AI driver for comparison.
 ```
 Cargo.toml            # Workspace root — members: racing, emulator. Excludes bot.
 ├── racing/           # Bevy game — physics, rendering, car spawning, AI systems
-├── emulator/         # Use-case-agnostic RISC-V emulator (RV32I) with Bevy integration
+├── emulator/         # Use-case-agnostic RISC-V emulator (RV32IMAFC + RV32C/Zcf) with Bevy integration
 └── bot/              # no_std RISC-V programs compiled to bare-metal ELF (separate target)
 ```
 
-**Important**: `bot/` is excluded from the workspace because it cross-compiles to `riscv32i-unknown-none-elf`. It must be built separately before the racing crate (which embeds the ELF via `include_bytes!`).
+**Important**: `bot/` is excluded from the workspace because it cross-compiles to `riscv32imafc-unknown-none-elf`. It must be built separately before the racing crate (which embeds the ELF via `include_bytes!`).
+
+**Important**: Always keep this file up to date when changing code.
 
 ## Build & Run
 
@@ -30,7 +32,7 @@ cargo run --bin racing [-- path/to/track.toml]
 
 The bot ELF is embedded at compile time in `racing/src/main.rs` via:
 ```rust
-const BOT_ELF: &[u8] = include_bytes!("../../bot/target/riscv32i-unknown-none-elf/release/car");
+const BOT_ELF: &[u8] = include_bytes!("../../bot/target/riscv32imafc-unknown-none-elf/release/car");
 ```
 
 If you modify bot code, you must rebuild the bot before rebuilding racing.
@@ -41,7 +43,7 @@ If you modify bot code, you must rebuild the bot before rebuilding racing.
 
 **Must remain use-case agnostic.** No car/racing-specific code belongs here.
 
-- **`cpu.rs`** — Core emulator: `Hart` (CPU state: 32 registers + PC), `Dram` (64 KiB memory, loads ELF segments), `Mmu` (routes memory accesses to DRAM or devices), `LogDevice` (prints chars)
+- **`cpu.rs`** — Core emulator: `Hart` (32 GPRs, 32 FPRs, PC, LR/SC reservation), `Dram` (ELF-backed memory with stack headroom), `Mmu` (routes memory accesses to DRAM or devices), `LogDevice` (prints chars)
 - **`bevy.rs`** — `EmulatorPlugin` adds `cpu_system` to `FixedUpdate`. `CpuComponent` holds a `Hart`, `Dram`, and `Vec<Box<dyn RamLike>>` of devices. Use `CpuComponent::new(elf, devices, instructions_per_update)` to create.
 - **`lib.rs`** — `CpuBuilder` helper
 
@@ -75,13 +77,13 @@ cpu.device_as_mut::<CarControlsDevice>(2) // &mut CarControlsDevice
 
 ### `bot/` — RISC-V Bot Programs
 
-- Target: `riscv32i-unknown-none-elf` (configured in `bot/.cargo/config.toml`)
+- Target: `riscv32imafc-unknown-none-elf` (configured in `bot/.cargo/config.toml`)
 - Linker script `link.x` places `.text` at `0x1000` (start of DRAM)
 - `lib.rs` defines slot constants (`SLOT1`=0x100, `SLOT2`=0x200, `SLOT3`=0x300) and a bump allocator (`#[global_allocator]`)
 - `driving.rs` — `CarState` (reads from SLOT2) and `CarControls` (writes to SLOT3) via volatile pointer access
 - `bin/car.rs` — The car AI: infinite loop reading state, computing steering, writing controls
 - `bin/bottles.rs` — Test program (99 bottles of beer via log device)
-- Uses `bevy_math` with `default-features = false, features = ["libm"]` for software float math (no hardware FPU on RV32I)
+- Uses `bevy_math` with `default-features = false, features = ["libm"]`
 
 **CarState layout** (SLOT2, 0x200, read by bot):
 | Offset | Field       | Type |
@@ -138,12 +140,15 @@ cpu.device_as_mut::<CarControlsDevice>(2) // &mut CarControlsDevice
 
 4. **Bot programs are embedded** — The ELF binary is included at compile time via `include_bytes!`. There's no `build.rs` automation; the bot must be built manually first.
 
-5. **Software floats** — The RV32I ISA has no FPU. The bot uses `libm` (via `bevy_math`) for all float operations, which means each float operation takes many RISC-V instructions. The `instructions_per_update` value (currently 5000) needs to be high enough for the bot's loop to complete meaningful work each tick.
+5. **Instruction budget matters** — The `instructions_per_update` value (currently 5000) must be high enough for each bot loop iteration to make progress, but low enough to avoid burning host CPU.
+6. **Strict compressed decode** — Compressed instruction decode is intentionally strict RV32C(+Zcf). Illegal encodings must trap/panic; do not add permissive fallbacks.
+7. **Stack/DRAM alignment invariants** — DRAM allocation is rounded to 16-byte alignment with explicit stack headroom, and `sp` is set to a 16-byte aligned top-of-memory minus 16. Keep this when changing loader/builder code.
 
 ## Common Pitfalls
 
 - **Forgetting to rebuild the bot** — If you change `bot/` code, you must `cd bot && cargo build --release` before rebuilding `racing/`. The `include_bytes!` path won't trigger a rebuild automatically.
 - **Device index vs slot address** — Device index 0 = address 0x100, index 1 = 0x200, etc. Off-by-one errors here will silently read zeros or fail.
 - **Mmu passes offsets, not absolute addresses** — If you implement a new device, your `load`/`store` will receive `addr & 0xFF`, not the full address.
-- **`instructions_per_update` tuning** — Too low and the bot can't complete a loop iteration per tick. Too high and it burns CPU time. The bot's loop body involves multiple software float operations (normalize, angle_to, clamp) each costing hundreds of instructions.
+- **`instructions_per_update` tuning** — Too low and the bot can't complete a loop iteration per tick. Too high and it burns CPU time.
 - **Bump allocator in bot** — The bot has a 4 KiB heap that never frees. Allocating in a loop will eventually OOM. Current bot code doesn't allocate in its hot loop, but be careful adding features that do.
+- **Compressed immediates are easy to misdecode** — For `C.ADDI/C.LI/C.LUI/C.ANDI`, immediate sign comes from `inst[12]` mapped to imm bit 5. Missing that sign bit causes silent control-flow/data corruption.

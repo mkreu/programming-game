@@ -668,6 +668,14 @@ pub const DRAM_SIZE: u32 = 1024 * 64;
 /// Stack headroom reserved above loaded ELF segments.
 pub const STACK_HEADROOM: u32 = 1024 * 256;
 
+fn align_up_16(value: u32) -> u32 {
+    (value + 0xf) & !0xf
+}
+
+fn dram_size_for_loaded_end(max_load_end: u32) -> u32 {
+    align_up_16(max_load_end.saturating_add(STACK_HEADROOM).max(DRAM_SIZE))
+}
+
 pub trait RamLike: Send + Sync {
     fn load(&self, addr: u32, size: u32) -> Result<u32, ()>;
     fn store(&mut self, addr: u32, size: u32, value: u32) -> Result<(), ()>;
@@ -763,8 +771,7 @@ impl Dram {
             .map(|phdr| phdr.p_vaddr as u32 + phdr.p_memsz as u32)
             .max()
             .unwrap_or(0);
-        let required = max_load_end.saturating_add(STACK_HEADROOM).max(DRAM_SIZE);
-        let dram_size = ((required + 0xf) & !0xf) as usize;
+        let dram_size = dram_size_for_loaded_end(max_load_end) as usize;
         let mut mem = vec![0u8; dram_size];
 
         for phdr in all_load_phdrs {
@@ -1246,5 +1253,24 @@ mod tests {
             } => {}
             _ => panic!("unexpected decode"),
         }
+    }
+
+    #[test]
+    fn hart_new_stack_pointer_is_16_byte_aligned() {
+        let h = Hart::new(0);
+        assert_eq!(h.regs[2] & 0xf, 0);
+        assert_eq!(h.regs[2], (DRAM_SIZE - 16) & !0xf);
+    }
+
+    #[test]
+    fn dram_size_for_loaded_end_has_headroom_and_alignment() {
+        let min = dram_size_for_loaded_end(0x2000);
+        assert!(min >= DRAM_SIZE);
+        assert_eq!(min & 0xf, 0);
+
+        let large_end = 0x12345;
+        let sized = dram_size_for_loaded_end(large_end);
+        assert!(sized >= large_end + STACK_HEADROOM);
+        assert_eq!(sized & 0xf, 0);
     }
 }

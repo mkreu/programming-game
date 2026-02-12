@@ -1177,4 +1177,73 @@ mod tests {
             _ => panic!("wrong decode"),
         }
     }
+
+    #[test]
+    fn compressed_sign_extension_regressions() {
+        // c.addi a3, -1
+        let (decoded, len) = Instruction::parse_with_len(0x16fd);
+        assert_eq!(len, 2);
+        match decoded {
+            Instruction::I {
+                funct: IFunct::ADDI,
+                rd,
+                rs1,
+                imm,
+            } => {
+                assert_eq!(rd, 13);
+                assert_eq!(rs1, 13);
+                assert_eq!(imm, -1);
+            }
+            _ => panic!("wrong decode for c.addi"),
+        }
+
+        // c.li x5, -1
+        let (decoded, len) = Instruction::parse_with_len(0x52fd);
+        assert_eq!(len, 2);
+        match decoded {
+            Instruction::I {
+                funct: IFunct::ADDI,
+                rd,
+                rs1,
+                imm,
+            } => {
+                assert_eq!(rd, 5);
+                assert_eq!(rs1, 0);
+                assert_eq!(imm, -1);
+            }
+            _ => panic!("wrong decode for c.li"),
+        }
+
+        // c.lui x9, -1
+        let (decoded, len) = Instruction::parse_with_len(0x74fd);
+        assert_eq!(len, 2);
+        match decoded {
+            Instruction::U {
+                funct: UFunct::LUI,
+                rd,
+                imm,
+            } => {
+                assert_eq!(rd, 9);
+                assert_eq!(imm, -4096);
+            }
+            _ => panic!("wrong decode for c.lui"),
+        }
+
+        // c.andi x9, -1
+        let (decoded, len) = Instruction::parse_with_len(0x98fd);
+        assert_eq!(len, 2);
+        match decoded {
+            Instruction::I {
+                funct: IFunct::ANDI,
+                rd,
+                rs1,
+                imm,
+            } => {
+                assert_eq!(rd, 9);
+                assert_eq!(rs1, 9);
+                assert_eq!(imm, -1);
+            }
+            _ => panic!("wrong decode for c.andi"),
+        }
+    }
 }
