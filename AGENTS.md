@@ -43,8 +43,8 @@ If you modify bot code, you must rebuild the bot before rebuilding racing.
 
 **Must remain use-case agnostic.** No car/racing-specific code belongs here.
 
-- **`cpu.rs`** — Core emulator: `Hart` (32 GPRs, 32 FPRs, PC, LR/SC reservation), `Dram` (ELF-backed memory with stack headroom), `Mmu` (routes memory accesses to DRAM or devices), `LogDevice` (prints chars)
-- **`bevy.rs`** — `EmulatorPlugin` adds `cpu_system` to `FixedUpdate`. `CpuComponent` holds a `Hart`, `Dram`, and `Vec<Box<dyn RamLike>>` of devices. Use `CpuComponent::new(elf, devices, instructions_per_update)` to create.
+- **`cpu.rs`** — Core emulator: `Hart` (32 GPRs, 32 FPRs, PC, LR/SC reservation), `Dram` (ELF-backed memory with stack headroom), `Mmu` (routes memory accesses to DRAM or devices), `LogDevice` (buffered char output with `drain_output()` and `output()` methods)
+- **`bevy.rs`** — `CpuComponent` holds a `Hart`, `Dram`, and `Vec<Box<dyn RamLike>>` of devices. Use `CpuComponent::new(elf, devices, instructions_per_update)` to create. `cpu_system` is a public system function; the consumer must register it in `FixedUpdate` with appropriate run conditions.
 - **`lib.rs`** — `CpuBuilder` helper
 
 **`RamLike` trait** (`cpu.rs`) — The memory interface for devices:
@@ -113,7 +113,8 @@ cpu.device_as_mut::<CarControlsDevice>(2) // &mut CarControlsDevice
 
 ### `racing/` — The Game
 
-- **`main.rs`** — Bevy app setup, car spawning, physics, camera, two AI systems
+- **`main.rs`** — Bevy app setup, game state management (`SimState`), event-based car spawning, physics, free camera with follow-on-select, two AI systems
+- **`ui.rs`** — `RaceUiPlugin`: right-side panel with driver type selector, add/remove car buttons, start/pause/reset, per-car debug gizmo toggles, per-car follow camera button, scrollable console output (drains `LogDevice` buffers)
 - **`devices.rs`** — `CarStateDevice`, `CarControlsDevice`, and `SplineDevice` implementing `RamLike` (host-side counterparts to the bot's volatile pointers)
 - **`track.rs`** — `TrackSpline` resource, spline construction, track/kerb mesh generation
 - **`track_format.rs`** — TOML-based track file format (`TrackFile`)
@@ -124,23 +125,36 @@ cpu.device_as_mut::<CarControlsDevice>(2) // &mut CarControlsDevice
 - `AIDriver` — native Rust AI (spline-following with curvature-based braking)
 - `EmulatorDriver` — marker component for RISC-V-emulator-driven cars
 - `CpuComponent` (from emulator crate) — attached to emulator-driven cars
+- `CarLabel` — name label for each car
+- `DebugGizmos` — marker; when present on a car, debug gizmos are drawn (off by default)
 - `FrontWheel` — visual wheel rotation marker
 
+**Key resources:**
+- `RaceManager` — tracks all spawned cars (`Vec<CarEntry>`), selected driver type, next car ID, and per-car console output
+- `FollowCar` — optional entity to follow with the camera
+- `SimState` — state machine: `PreRace` (add/remove cars) → `Racing` (simulation active) → `Paused` (toggle)
+
+**Key messages (Bevy 0.18 `Message` trait, not `Event`):**
+- `SpawnCarRequest { driver: DriverType }` — sent by UI "Add Car" button, consumed by `handle_spawn_car_event`
+
 **System execution order:**
-1. `Update`: `handle_car_input` (keyboard → `Car`, excludes AI/emulator cars), `update_ai_driver` (native AI → `Car`)
-2. `FixedUpdate` (in order):
+1. `Update`: `handle_car_input` (keyboard → `Car`, excludes AI/emulator cars), `update_ai_driver` (native AI → `Car`, only in `Racing` state)
+2. `FixedUpdate` (in order, only in `Racing` state):
    - `update_emulator_driver` — writes physics state (position, velocity, forward direction) into `CarStateDevice` (**before** `cpu_system`)
    - `cpu_system` — runs N RISC-V instructions per tick; bot queries `SplineDevice` and computes controls (emulator crate)
    - `apply_emulator_controls` — reads `CarControlsDevice` → `Car` (**after** `cpu_system`)
    - `apply_car_forces` — applies `Car` state to physics forces
+3. `Update` (always): UI systems (car list rebuild, button handlers, console output drain), `update_camera`, `draw_gizmos`, `update_fps_counter`
 
-**Car spawning** — `spawn_car()` takes a `DriverType` enum (`NativeAI`, `Emulator`). In `setup()`, cars alternate: even-indexed get `AIDriver`, odd-indexed get `EmulatorDriver` + `CpuComponent` with the embedded bot ELF and four devices (LogDevice, CarStateDevice, CarControlsDevice, SplineDevice). Each emulator car gets its own isolated CPU, memory, device set, and SplineDevice containing a clone of the track spline.
+**Car spawning** — Event-driven via `SpawnCarRequest` message. The UI sends a `SpawnCarRequest` with a `DriverType`; `handle_spawn_car_event` creates the car entity with staggered grid positioning. Cars can only be added/removed in `PreRace` state. Each emulator car gets its own isolated CPU, memory, device set, and SplineDevice containing a clone of the track spline.
+
+**Camera** — Free camera by default (no cars spawned at startup). Middle/right-mouse drag to pan, scroll to zoom. When a car is selected via the UI "follow" button, the camera snaps to it; clicking again unfollows.
 
 **Physics model** — Bicycle-ish 4-wheel model: acceleration/braking along forward vector, lateral grip forces per wheel computed from slip angle. Uses `avian2d` for rigid body simulation. Fixed timestep at 200 Hz.
 
 ## Key Architectural Decisions
 
-1. **Emulator is use-case agnostic** — Car-specific devices (`CarStateDevice`, `CarControlsDevice`, `SplineDevice`) live in `racing/`, not in `emulator/`. The emulator only provides `RamLike`, `Mmu`, `LogDevice`, `CpuComponent`, and the plugin.
+1. **Emulator is use-case agnostic** — Car-specific devices (`CarStateDevice`, `CarControlsDevice`, `SplineDevice`) live in `racing/`, not in `emulator/`. The emulator only provides `RamLike`, `Mmu`, `LogDevice` (buffered), `CpuComponent`, and the plugin.
 
 2. **Each emulator car is fully isolated** — Separate `Hart`, `Dram`, and device instances per car entity. No shared state between emulator instances. Each car has its own `SplineDevice` with a cloned copy of the track spline.
 

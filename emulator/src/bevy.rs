@@ -1,15 +1,7 @@
 use bevy::prelude::*;
 
-use crate::cpu::{Instruction, Mmu, RamLike};
 use crate::CpuBuilder;
-
-pub struct EmulatorPlugin;
-
-impl Plugin for EmulatorPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (cpu_system,));
-    }
-}
+use crate::cpu::{Instruction, Mmu, RamLike};
 
 #[derive(Component)]
 pub struct CpuComponent {
@@ -36,12 +28,16 @@ impl CpuComponent {
 
     /// Downcast a device to a concrete type.
     pub fn device_as<T: RamLike + 'static>(&self, index: usize) -> Option<&T> {
-        self.devices.get(index).and_then(|d| d.as_any().downcast_ref::<T>())
+        self.devices
+            .get(index)
+            .and_then(|d| d.as_any().downcast_ref::<T>())
     }
 
     /// Downcast a device mutably to a concrete type.
     pub fn device_as_mut<T: RamLike + 'static>(&mut self, index: usize) -> Option<&mut T> {
-        self.devices.get_mut(index).and_then(|d| d.as_any_mut().downcast_mut::<T>())
+        self.devices
+            .get_mut(index)
+            .and_then(|d| d.as_any_mut().downcast_mut::<T>())
     }
 }
 

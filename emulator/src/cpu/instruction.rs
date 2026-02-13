@@ -273,7 +273,12 @@ impl Instruction {
                     0x5 => LHU,
                     _ => panic!("invalid funct3"),
                 };
-                Self::I { funct, rd, rs1, imm }
+                Self::I {
+                    funct,
+                    rd,
+                    rs1,
+                    imm,
+                }
             }
             0x0f => {
                 let funct = match funct3 {
@@ -318,7 +323,12 @@ impl Instruction {
                         rs1,
                         imm: rs2 as i32,
                     },
-                    _ => Self::I { funct, rd, rs1, imm },
+                    _ => Self::I {
+                        funct,
+                        rd,
+                        rs1,
+                        imm,
+                    },
                 }
             }
             0x23 => {
@@ -386,7 +396,12 @@ impl Instruction {
                         0x7 => REMU,
                         _ => panic!("invalid M funct3"),
                     };
-                    return Self::M { funct, rd, rs1, rs2 };
+                    return Self::M {
+                        funct,
+                        rd,
+                        rs1,
+                        rs2,
+                    };
                 }
 
                 use RFunct::*;
@@ -413,7 +428,12 @@ impl Instruction {
                     0x7 => AND,
                     _ => panic!("invalid funct3"),
                 };
-                Self::R { funct, rd, rs1, rs2 }
+                Self::R {
+                    funct,
+                    rd,
+                    rs1,
+                    rs2,
+                }
             }
             0x37 => {
                 let imm = (inst & 0xfffff000) as i32;
@@ -471,7 +491,12 @@ impl Instruction {
                     0x3 => FLFunct::FLD,
                     _ => panic!("invalid funct3"),
                 };
-                Self::FL { funct, rd, rs1, imm }
+                Self::FL {
+                    funct,
+                    rd,
+                    rs1,
+                    imm,
+                }
             }
             0x27 => {
                 let imm_u = ((inst >> 20) & 0xfe0) | ((inst >> 7) & 0x1f);
@@ -907,7 +932,9 @@ impl Instruction {
                     if rd == 0 {
                         panic!("illegal C.LWSP");
                     }
-                    let uimm = ((inst >> 4) & 0x7) << 2 | ((inst >> 12) & 0x1) << 5 | ((inst >> 2) & 0x3) << 6;
+                    let uimm = ((inst >> 4) & 0x7) << 2
+                        | ((inst >> 12) & 0x1) << 5
+                        | ((inst >> 2) & 0x3) << 6;
                     Self::I {
                         funct: IFunct::LW,
                         rd,
@@ -921,7 +948,9 @@ impl Instruction {
                     if rd == 0 {
                         panic!("illegal C.FLWSP");
                     }
-                    let uimm = ((inst >> 4) & 0x7) << 2 | ((inst >> 12) & 0x1) << 5 | ((inst >> 2) & 0x3) << 6;
+                    let uimm = ((inst >> 4) & 0x7) << 2
+                        | ((inst >> 12) & 0x1) << 5
+                        | ((inst >> 2) & 0x3) << 6;
                     Self::FL {
                         funct: FLFunct::FLW,
                         rd,

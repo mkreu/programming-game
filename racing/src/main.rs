@@ -4,19 +4,93 @@ use avian2d::prelude::{forces::ForcesItem, *};
 use bevy::{
     color::palettes::css::{GREEN, RED, WHITE, YELLOW},
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
-    input::mouse::MouseWheel,
+    input::mouse::{MouseMotion, MouseWheel},
     prelude::*,
 };
-use emulator::bevy::{CpuComponent, EmulatorPlugin, cpu_system};
+use emulator::bevy::{CpuComponent, cpu_system};
 use emulator::cpu::LogDevice;
 
 use racing::devices::{CarControlsDevice, CarStateDevice, SplineDevice};
 use racing::track;
 use racing::track_format::TrackFile;
 
+mod ui;
+
 /// Pre-built RISC-V ELF binary for the bot car AI.
-const BOT_ELF: &[u8] =
-    include_bytes!("../../bot/target/riscv32imafc-unknown-none-elf/release/car");
+const BOT_ELF: &[u8] = include_bytes!("../../bot/target/riscv32imafc-unknown-none-elf/release/car");
+
+// Re-export types used by the UI module.
+pub(crate) use main_game::*;
+
+/// All game-specific types live here so `ui` can import them via `crate::main_game::*`.
+mod main_game {
+    use super::*;
+
+    // ── Simulation state ────────────────────────────────────────────────
+
+    #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum SimState {
+        #[default]
+        PreRace,
+        Racing,
+        Paused,
+    }
+
+    // ── Events ──────────────────────────────────────────────────────────
+
+    #[derive(Message)]
+    pub struct SpawnCarRequest {
+        pub driver: DriverType,
+    }
+
+    // ── Resources ───────────────────────────────────────────────────────
+
+    #[derive(Resource)]
+    pub struct RaceManager {
+        pub cars: Vec<CarEntry>,
+        pub selected_driver: DriverType,
+        pub next_car_id: u32,
+    }
+
+    impl Default for RaceManager {
+        fn default() -> Self {
+            Self {
+                cars: Vec::new(),
+                selected_driver: DriverType::NativeAI,
+                next_car_id: 1,
+            }
+        }
+    }
+
+    pub struct CarEntry {
+        pub entity: Entity,
+        pub name: String,
+        pub driver: DriverType,
+        pub console_output: String,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DriverType {
+        NativeAI,
+        Emulator,
+    }
+
+    #[derive(Resource, Default)]
+    pub struct FollowCar {
+        pub target: Option<Entity>,
+    }
+
+    // ── Components ──────────────────────────────────────────────────────
+
+    #[derive(Component)]
+    pub struct CarLabel {
+        pub name: String,
+    }
+
+    /// Marker: when present on a car entity, debug gizmos are drawn for it.
+    #[derive(Component)]
+    pub struct DebugGizmos;
+}
 
 fn main() {
     let track_path = std::env::args()
@@ -28,24 +102,46 @@ fn main() {
             DefaultPlugins,
             FrameTimeDiagnosticsPlugin::default(),
             PhysicsPlugins::default(),
-            PhysicsDebugPlugin,
-            EmulatorPlugin,
+            ui::RaceUiPlugin,
         ))
+        .init_state::<SimState>()
+        .add_message::<SpawnCarRequest>()
         .insert_resource(Gravity::ZERO)
         .insert_resource(Time::<Fixed>::from_duration(
             std::time::Duration::from_secs_f32(1.0 / 200.0),
         ))
         .insert_resource(TrackPath(track_path))
+        .insert_resource(RaceManager::default())
+        .insert_resource(FollowCar::default())
         .add_systems(Startup, (setup_track, setup.after(setup_track)))
         .add_systems(Startup, set_default_zoom.after(setup))
-        .add_systems(Update, (handle_car_input, update_ai_driver))
+        // Pause/unpause avian2d physics based on SimState
+        .add_systems(Startup, pause_physics)
+        .add_systems(OnEnter(SimState::Racing), unpause_physics)
+        .add_systems(OnEnter(SimState::Paused), pause_physics)
+        .add_systems(OnEnter(SimState::PreRace), pause_physics)
+        // Spawning: always active so cars can be added in PreRace
+        .add_systems(Update, handle_spawn_car_event)
+        // Keyboard driving: always active (only affects non-AI, non-emulator cars)
+        .add_systems(Update, handle_car_input)
+        // AI + emulator: only run while Racing
+        .add_systems(
+            FixedUpdate,
+            update_ai_driver.run_if(in_state(SimState::Racing)),
+        )
         .add_systems(
             FixedUpdate,
             (
                 update_emulator_driver.before(cpu_system),
+                cpu_system,
                 apply_emulator_controls.after(cpu_system),
-                apply_car_forces,
-            ),
+            )
+                .run_if(in_state(SimState::Racing)),
+        )
+        // Physics forces: only while Racing
+        .add_systems(
+            FixedUpdate,
+            apply_car_forces.run_if(in_state(SimState::Racing)),
         )
         .add_systems(Update, (update_fps_counter, update_camera, draw_gizmos))
         .run();
@@ -106,13 +202,14 @@ fn setup_track(
     ));
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>, track_path: Res<TrackPath>, track_spline: Res<track::TrackSpline>) {
+fn setup(mut commands: Commands) {
+    // FPS counter
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            top: px(8.0),
-            left: px(8.0),
-            padding: UiRect::axes(px(8.0), px(4.0)),
+            top: Val::Px(8.0),
+            left: Val::Px(8.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
             ..default()
         },
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
@@ -125,39 +222,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, track_path: Res
         FpsCounterText,
     ));
 
-    // Spawn a camera; we'll set a custom default zoom once in `set_default_zoom`.
+    // Camera — starts free (not following any car)
     commands.spawn(Camera2d);
-
-    let track_file = TrackFile::load(std::path::Path::new(&track_path.0))
-        .unwrap_or_else(|_| panic!("Failed to load track file: {}", track_path.0));
-    let start_point = track::first_point_from_file(&track_file);
-
-    // Spawn cars with alternating driver types:
-    // even index = native AIDriver, odd index = EmulatorDriver (RISC-V bot)
-    let offsets = [
-        Vec2::new(0.0, 2.0),
-        Vec2::new(1.0, -2.0),
-        Vec2::new(2.0, 2.0),
-        Vec2::new(3.0, -2.0),
-        Vec2::new(4.0, 2.0),
-        Vec2::new(5.0, -2.0),
-        Vec2::new(6.0, 2.0),
-        Vec2::new(7.0, -2.0),
-    ];
-    for (i, offset) in offsets.iter().enumerate() {
-        let driver = if i % 2 == 0 {
-            DriverType::NativeAI
-        } else {
-            DriverType::Emulator
-        };
-        spawn_car(
-            &mut commands,
-            &asset_server,
-            start_point + *offset,
-            driver,
-            &track_spline,
-        );
-    }
 }
 
 #[derive(Component)]
@@ -189,9 +255,59 @@ fn set_default_zoom(mut camera_query: Query<&mut Projection, With<Camera2d>>) {
     }
 }
 
-enum DriverType {
-    NativeAI,
-    Emulator,
+fn pause_physics(mut physics_time: ResMut<Time<Physics>>) {
+    physics_time.pause();
+}
+
+fn unpause_physics(mut physics_time: ResMut<Time<Physics>>) {
+    physics_time.unpause();
+}
+
+// ── Starting grid positions ─────────────────────────────────────────────────
+
+/// Return the staggered grid offset for the Nth car (0-indexed).
+fn grid_offset(index: usize) -> Vec2 {
+    let row = index as f32;
+    let side = if index % 2 == 0 { 1.0 } else { -1.0 };
+    Vec2::new(row * 2.0, side * 2.0)
+}
+
+// ── Car spawning via event ──────────────────────────────────────────────────
+
+fn handle_spawn_car_event(
+    mut events: MessageReader<SpawnCarRequest>,
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    track_path: Res<TrackPath>,
+    track_spline: Res<track::TrackSpline>,
+    mut manager: ResMut<RaceManager>,
+) {
+    for event in events.read() {
+        let car_index = manager.cars.len();
+        let offset = grid_offset(car_index);
+
+        let track_file = TrackFile::load(std::path::Path::new(&track_path.0))
+            .unwrap_or_else(|_| panic!("Failed to load track file: {}", track_path.0));
+        let start_point = track::first_point_from_file(&track_file);
+
+        let position = start_point + offset;
+        let car_name = format!("Car {}", manager.next_car_id);
+        let entity = spawn_car(
+            &mut commands,
+            &asset_server,
+            position,
+            event.driver,
+            &track_spline,
+            &car_name,
+        );
+        manager.cars.push(CarEntry {
+            entity,
+            name: car_name,
+            driver: event.driver,
+            console_output: String::new(),
+        });
+        manager.next_car_id += 1;
+    }
 }
 
 fn spawn_car(
@@ -200,7 +316,8 @@ fn spawn_car(
     position: Vec2,
     driver: DriverType,
     track_spline: &track::TrackSpline,
-) {
+    name: &str,
+) -> Entity {
     let sprite_scale = Vec3::splat(0.008);
 
     let mut entity = commands.spawn((
@@ -216,6 +333,9 @@ fn spawn_car(
             accelerator: 0.0,
             brake: 0.0,
         },
+        CarLabel {
+            name: name.to_string(),
+        },
     ));
 
     match driver {
@@ -223,20 +343,18 @@ fn spawn_car(
             entity.insert(AIDriver { target_t: 0.0 });
         }
         DriverType::Emulator => {
-            // Create per-car devices: slot0=Log, slot1=CarState, slot2=CarControls, slot3=Spline
             let devices: Vec<Box<dyn emulator::cpu::RamLike>> = vec![
-                Box::new(LogDevice),
+                Box::new(LogDevice::new()),
                 Box::new(CarStateDevice::default()),
                 Box::new(CarControlsDevice::default()),
                 Box::new(SplineDevice::new(track_spline)),
             ];
             let cpu = CpuComponent::new(BOT_ELF, devices, 10000);
-            entity.insert((
-                EmulatorDriver,
-                cpu,
-            ));
+            entity.insert((EmulatorDriver, cpu));
         }
     }
+
+    let entity_id = entity.id();
 
     entity.with_children(|parent| {
         parent.spawn((
@@ -280,6 +398,8 @@ fn spawn_car(
                 ));
             });
     });
+
+    entity_id
 }
 
 #[derive(Component)]
@@ -305,7 +425,6 @@ fn handle_car_input(
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     for mut car in &mut car_query {
-        // Update accelerator and brake
         car.accelerator = if keyboard.pressed(KeyCode::KeyW) {
             1.0
         } else {
@@ -317,15 +436,13 @@ fn handle_car_input(
             0.0
         };
 
-        // Update steering
-        let max_steer = PI / 6.0; // Max steering angle (30 degrees)
-        let steer_rate = 0.05 * car.steer.abs().max(0.1); // Steering speed
+        let max_steer = PI / 6.0;
+        let steer_rate = 0.05 * car.steer.abs().max(0.1);
         if keyboard.pressed(KeyCode::KeyA) {
             car.steer = (-max_steer).max(car.steer - steer_rate);
         } else if keyboard.pressed(KeyCode::KeyD) {
             car.steer = max_steer.min(car.steer + steer_rate);
         } else {
-            // Return wheels to center when no input
             car.steer = if car.steer > 0.0 {
                 (car.steer - steer_rate).max(0.0)
             } else {
@@ -336,7 +453,14 @@ fn handle_car_input(
 }
 
 fn update_ai_driver(
-    mut ai_query: Query<(&Transform, &mut Car, &mut AIDriver, &LinearVelocity)>,
+    mut ai_query: Query<(
+        Entity,
+        &Transform,
+        &mut Car,
+        &mut AIDriver,
+        &LinearVelocity,
+        Has<DebugGizmos>,
+    )>,
     track: Option<Res<track::TrackSpline>>,
     mut gizmos: Gizmos,
 ) {
@@ -347,27 +471,22 @@ fn update_ai_driver(
     let domain = track.spline.domain();
     let t_max = domain.end();
 
-    for (transform, mut car, mut ai, velocity) in &mut ai_query {
+    for (_entity, transform, mut car, mut ai, velocity, show_gizmos) in &mut ai_query {
         let car_pos = transform.translation.xy();
         let car_forward = transform.up().xy().normalize();
         let car_speed = velocity.length();
 
-        // Instead of finding closest point, smoothly advance along the track
-        // This prevents jumps and ensures forward progress only
-
-        // Search a small window around current target_t to find where we actually are
         let mut best_t = ai.target_t;
         let mut best_score = f32::MAX;
 
         let window_samples = 50;
-        let window_size = t_max * 0.1; // Search +/- 10% of track
+        let window_size = t_max * 0.1;
         for i in 0..window_samples {
             let offset = (i as f32 / window_samples as f32) * window_size - window_size * 0.5;
             let test_t = (ai.target_t + offset + t_max) % t_max;
             let test_pos = track.spline.position(test_t);
             let dist = car_pos.distance(test_pos);
 
-            // Prefer points ahead (positive offset) over points behind
             let forward_bias = if offset > 0.0 { 0.0 } else { 2.0 };
             let score = dist + forward_bias;
 
@@ -377,7 +496,6 @@ fn update_ai_driver(
             }
         }
 
-        // Dynamic lookahead based on speed
         let base_lookahead = 2.0;
         let speed_factor = (car_speed * 0.5).max(1.0);
         let lookahead_distance = base_lookahead * speed_factor;
@@ -385,9 +503,8 @@ fn update_ai_driver(
         let mut current_t = best_t;
         let mut traveled = 0.0;
 
-        // Walk along the spline until we've traveled lookahead_distance
         while traveled < lookahead_distance {
-            let step = t_max / 2000.0; // Smaller steps for smoother distance calculation
+            let step = t_max / 2000.0;
             let next_t = (current_t + step) % t_max;
             let p1 = track.spline.position(current_t);
             let p2 = track.spline.position(next_t);
@@ -397,12 +514,9 @@ fn update_ai_driver(
 
         ai.target_t = current_t;
 
-        // Calculate curvature ahead to determine braking
-        let curvature_lookahead = 15.0; // Look further ahead for braking
+        let curvature_lookahead = 15.0;
         let mut curve_t = best_t;
         let mut curve_traveled = 0.0;
-
-        // Sample points ahead to measure curvature
         let mut max_curvature: f32 = 0.0;
 
         while curve_traveled < curvature_lookahead {
@@ -414,7 +528,6 @@ fn update_ai_driver(
                 curve_t - step
             };
 
-            // Calculate curvature using three points
             let p_prev = track.spline.position(prev_t);
             let p_curr = track.spline.position(curve_t);
             let p_next = track.spline.position(next_t);
@@ -422,7 +535,6 @@ fn update_ai_driver(
             let v1 = (p_curr - p_prev).normalize();
             let v2 = (p_next - p_curr).normalize();
 
-            // Angle change indicates curvature
             let angle_change = v1.angle_to(v2).abs();
             max_curvature = max_curvature.max(angle_change);
 
@@ -432,77 +544,59 @@ fn update_ai_driver(
 
         let target_pos = track.spline.position(ai.target_t);
 
-        // Debug visualization
-        gizmos.circle_2d(target_pos, 0.5, bevy::color::palettes::css::BLUE);
-        gizmos.line_2d(car_pos, target_pos, bevy::color::palettes::css::AQUA);
+        if show_gizmos {
+            gizmos.circle_2d(target_pos, 0.5, bevy::color::palettes::css::BLUE);
+            gizmos.line_2d(car_pos, target_pos, bevy::color::palettes::css::AQUA);
+            gizmos.arrow_2d(
+                car_pos,
+                car_pos + car_forward * 3.0,
+                bevy::color::palettes::css::LIME,
+            );
+        }
 
-        // Draw car forward direction
-        gizmos.arrow_2d(
-            car_pos,
-            car_pos + car_forward * 3.0,
-            bevy::color::palettes::css::LIME,
-        );
-
-        // Calculate steering to target
         let to_target = (target_pos - car_pos).normalize();
         let angle_to_target = car_forward.angle_to(to_target);
 
-        // Smooth proportional steering with lower gain
-        // Negate because physics uses -car.steer
         let max_steer = PI / 6.0;
         let desired_steer = (-angle_to_target * 0.8).clamp(-max_steer, max_steer);
-        let steer_blend = 0.1; // How quickly to change steering (lower = smoother)
+        let steer_blend = 0.1;
         car.steer = car.steer * (1.0 - steer_blend) + desired_steer * steer_blend;
 
-        // Determine acceleration/braking based on curvature ahead
-        let curvature_threshold_brake = 0.05; // Start braking at tight turns
-        let curvature_threshold_caution = 0.02; // Reduce throttle at moderate turns
+        let curvature_threshold_brake = 0.05;
+        let curvature_threshold_caution = 0.02;
 
         if max_curvature > curvature_threshold_brake {
-            // Sharp turn ahead - brake
             car.accelerator = 0.0;
             car.brake = ((max_curvature - curvature_threshold_brake) * 10.0).min(1.0);
         } else if max_curvature > curvature_threshold_caution {
-            // Moderate turn - reduce throttle
             let throttle_reduction = (max_curvature - curvature_threshold_caution)
                 / (curvature_threshold_brake - curvature_threshold_caution);
             car.accelerator = (1.0 - throttle_reduction * 0.7).max(0.3) * 0.1;
             car.brake = 0.0;
         } else {
-            // Straight or gentle curve - full throttle
             car.accelerator = 1.0 * 0.1;
             car.brake = 0.0;
         }
     }
 }
 
-/// Runs BEFORE cpu_system: computes the lookahead target and writes car state
-/// into the emulator's CarStateDevice so the RISC-V bot can read it.
+/// Runs BEFORE cpu_system: writes car state into the emulator's CarStateDevice.
 fn update_emulator_driver(
-    mut emu_query: Query<(
-        &Transform,
-        &LinearVelocity,
-        &mut CpuComponent,
-    ), With<EmulatorDriver>>,
+    mut emu_query: Query<(&Transform, &LinearVelocity, &mut CpuComponent), With<EmulatorDriver>>,
 ) {
     for (transform, velocity, mut cpu) in &mut emu_query {
         let car_pos = transform.translation.xy();
         let car_forward = transform.up().xy().normalize();
         let car_speed = velocity.length();
 
-        // Write basic physics state into the CarStateDevice (device index 1 = slot at 0x200)
-        // The bot now handles all spline logic itself via SplineDevice
         if let Some(state_dev) = cpu.device_as_mut::<CarStateDevice>(1) {
             state_dev.update(car_speed, car_pos, car_forward);
         }
     }
 }
 
-/// Runs AFTER cpu_system: reads the bot's control outputs from CarControlsDevice
-/// and applies them to the Car component.
-fn apply_emulator_controls(
-    mut emu_query: Query<(&mut Car, &CpuComponent), With<EmulatorDriver>>,
-) {
+/// Runs AFTER cpu_system: reads the bot's control outputs and applies them.
+fn apply_emulator_controls(mut emu_query: Query<(&mut Car, &CpuComponent), With<EmulatorDriver>>) {
     for (mut car, cpu) in &mut emu_query {
         if let Some(ctrl_dev) = cpu.device_as::<CarControlsDevice>(2) {
             car.accelerator = ctrl_dev.accelerator();
@@ -513,12 +607,18 @@ fn apply_emulator_controls(
 }
 
 fn apply_car_forces(
-    mut car_query: Query<(&Transform, &mut Car, &Children, Forces)>,
+    mut car_query: Query<(
+        Entity,
+        &Transform,
+        &mut Car,
+        &Children,
+        Forces,
+        Has<DebugGizmos>,
+    )>,
     mut wheel_query: Query<&mut Transform, (With<FrontWheel>, Without<Car>)>,
     mut gizmos: Gizmos,
 ) {
-    for (transform, car, children, mut forces) in &mut car_query {
-        // Car physics parameters
+    for (_entity, transform, car, children, mut forces, show_gizmos) in &mut car_query {
         let acceleration = 30.0;
         let braking = 50.0;
 
@@ -526,57 +626,59 @@ fn apply_car_forces(
         let forward = transform.up().xy().normalize();
         let left = forward.perp();
 
-        // Apply acceleration/braking based on car state
         if car.brake > 0.0 {
             forces.apply_linear_acceleration(forward * -braking * car.brake);
-            gizmos.arrow_2d(
-                position,
-                position + forward * -braking * car.brake * 0.3,
-                WHITE,
-            );
+            if show_gizmos {
+                gizmos.arrow_2d(
+                    position,
+                    position + forward * -braking * car.brake * 0.3,
+                    WHITE,
+                );
+            }
         } else if car.accelerator > 0.0 {
             forces.apply_linear_acceleration(forward * acceleration * car.accelerator);
-            gizmos.arrow_2d(
-                position,
-                position + forward * acceleration * car.accelerator * 0.3,
-                WHITE,
-            );
+            if show_gizmos {
+                gizmos.arrow_2d(
+                    position,
+                    position + forward * acceleration * car.accelerator * 0.3,
+                    WHITE,
+                );
+            }
         }
 
-        // Front left
         apply_wheel_force(
             position,
             forward * WHEEL_BASE + left * -WHEEL_TRACK / 2.0,
             Vec2::from_angle(-car.steer).rotate(forward),
             &mut forces,
             &mut gizmos,
+            show_gizmos,
         );
-        // Front right
         apply_wheel_force(
             position,
             forward * WHEEL_BASE + left * WHEEL_TRACK / 2.0,
             Vec2::from_angle(-car.steer).rotate(forward),
             &mut forces,
             &mut gizmos,
+            show_gizmos,
         );
-        // Rear left
         apply_wheel_force(
             position,
             left * -WHEEL_TRACK / 2.0,
             forward,
             &mut forces,
             &mut gizmos,
+            show_gizmos,
         );
-        // Rear right
         apply_wheel_force(
             position,
             left * WHEEL_TRACK / 2.0,
             forward,
             &mut forces,
             &mut gizmos,
+            show_gizmos,
         );
 
-        // Update wheel rotation
         for child in children.iter() {
             if let Ok(mut wheel_transform) = wheel_query.get_mut(child) {
                 wheel_transform.rotation = Quat::from_rotation_z(-car.steer);
@@ -591,28 +693,37 @@ fn apply_wheel_force(
     wheel_forward: Vec2,
     forces: &mut ForcesItem<'_, '_>,
     gizmos: &mut Gizmos,
+    show_gizmos: bool,
 ) {
     let wheel_pos = car_position + wheel_offset;
     let wheel_left = wheel_forward.perp();
-    gizmos.arrow_2d(wheel_pos, wheel_pos + wheel_forward * 1.0, YELLOW);
-    gizmos.arrow_2d(wheel_pos, wheel_pos + wheel_left * 0.5, YELLOW);
+
+    if show_gizmos {
+        gizmos.arrow_2d(wheel_pos, wheel_pos + wheel_forward * 1.0, YELLOW);
+        gizmos.arrow_2d(wheel_pos, wheel_pos + wheel_left * 0.5, YELLOW);
+    }
 
     let o = forces.angular_velocity();
     let l = forces.linear_velocity();
     let wow = wheel_pos - car_position;
     let wheel_velocity = l + Vec2::new(-o * wow.y, o * wow.x);
-    gizmos.arrow_2d(wheel_pos, wheel_pos + wheel_velocity * 0.1, GREEN);
+
+    if show_gizmos {
+        gizmos.arrow_2d(wheel_pos, wheel_pos + wheel_velocity * 0.1, GREEN);
+    }
 
     if wheel_velocity.length() > 0.1 {
         let force = -wheel_velocity.normalize().dot(wheel_left)
             * wheel_left
             * 10.0_f32.min(wheel_velocity.length() * 5.0);
-        gizmos.arrow_2d(wheel_pos, wheel_pos + force, RED);
+        if show_gizmos {
+            gizmos.arrow_2d(wheel_pos, wheel_pos + force, RED);
+        }
         forces.apply_linear_acceleration_at_point(force, wheel_pos);
     }
 }
 
-fn draw_gizmos(car_query: Query<(&Transform, &Car)>, mut gizmos: Gizmos) {
+fn draw_gizmos(car_query: Query<(&Transform, &Car), With<DebugGizmos>>, mut gizmos: Gizmos) {
     for (transform, _car) in &car_query {
         gizmos.cross(transform.to_isometry(), 0.2, RED);
         gizmos.cross(
@@ -630,15 +741,15 @@ fn update_camera(
     car_query: Query<&Transform, With<Car>>,
     mut camera_query: Query<(&mut Transform, &mut Projection), (With<Camera2d>, Without<Car>)>,
     mut scroll_events: MessageReader<MouseWheel>,
+    mut motion_events: MessageReader<MouseMotion>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    follow: Res<FollowCar>,
 ) {
-    let Some(car_transform) = car_query.iter().next() else {
-        return;
-    };
     let Ok((mut camera_transform, mut projection)) = camera_query.single_mut() else {
         return;
     };
 
-    // Handle zoom with mouse wheel
+    let mut current_scale = 0.05_f32;
     if let Projection::Orthographic(ref mut ortho) = *projection {
         for event in scroll_events.read() {
             let zoom_delta = match event.unit {
@@ -649,9 +760,23 @@ fn update_camera(
             ortho.scale *= 1.0 - zoom_delta;
             ortho.scale = ortho.scale.clamp(0.001, 10.0);
         }
+        current_scale = ortho.scale;
     }
 
-    // Follow the car
-    camera_transform.translation.x = car_transform.translation.x;
-    camera_transform.translation.y = car_transform.translation.y;
+    // If following a car, snap camera to it
+    if let Some(follow_entity) = follow.target {
+        if let Ok(car_tf) = car_query.get(follow_entity) {
+            camera_transform.translation.x = car_tf.translation.x;
+            camera_transform.translation.y = car_tf.translation.y;
+            return; // Skip manual panning when following
+        }
+    }
+
+    // Free camera: middle-mouse or right-mouse drag to pan
+    if mouse_buttons.pressed(MouseButton::Middle) || mouse_buttons.pressed(MouseButton::Right) {
+        for event in motion_events.read() {
+            camera_transform.translation.x -= event.delta.x * current_scale;
+            camera_transform.translation.y += event.delta.y * current_scale;
+        }
+    }
 }

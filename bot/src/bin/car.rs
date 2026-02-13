@@ -16,6 +16,8 @@ fn panic(_panic: &PanicInfo<'_>) -> ! {
 
 #[unsafe(export_name = "main")]
 fn main() -> ! {
+    writeln!(log(), "Car OS starting up...").ok();
+
     let car_state = CarState::bind(bot::SLOT2);
     let mut car_controls = CarControls::bind(bot::SLOT3);
     let mut spline = SplineQuery::bind(bot::SLOT4);

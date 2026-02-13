@@ -218,11 +218,7 @@ impl Hart {
                 instruction::MFunct::REMU => {
                     let lhs = self.regs[rs1];
                     let rhs = self.regs[rs2];
-                    self.regs[rd] = if rhs == 0 {
-                        lhs
-                    } else {
-                        lhs.wrapping_rem(rhs)
-                    };
+                    self.regs[rd] = if rhs == 0 { lhs } else { lhs.wrapping_rem(rhs) };
                 }
             },
             Instruction::I {
@@ -412,7 +408,8 @@ impl Hart {
                     self.fregs[rd] = bits_from_f32(result);
                 }
                 instruction::FRFunct::FsgnjS => {
-                    self.fregs[rd] = (self.fregs[rs1] & 0x7fff_ffff) | (self.fregs[rs2] & 0x8000_0000);
+                    self.fregs[rd] =
+                        (self.fregs[rs1] & 0x7fff_ffff) | (self.fregs[rs2] & 0x8000_0000);
                 }
                 instruction::FRFunct::FsgnjnS => {
                     self.fregs[rd] =
@@ -704,7 +701,10 @@ impl RamLike for Dram {
             32 => 4usize,
             _ => return Err(()),
         };
-        if addr.checked_add(width).is_none_or(|end| end > self.dram.len()) {
+        if addr
+            .checked_add(width)
+            .is_none_or(|end| end > self.dram.len())
+        {
             return Err(());
         }
         match size {
@@ -725,7 +725,10 @@ impl RamLike for Dram {
             32 => 4usize,
             _ => return Err(()),
         };
-        if addr.checked_add(width).is_none_or(|end| end > self.dram.len()) {
+        if addr
+            .checked_add(width)
+            .is_none_or(|end| end > self.dram.len())
+        {
             return Err(());
         }
         match size {
@@ -882,7 +885,36 @@ impl RamLike for Mmu<'_> {
     }
 }
 
-pub struct LogDevice;
+/// Memory-mapped log device that captures character output into a buffer.
+/// Characters are written as 32-bit values (Unicode code points).
+/// The buffer can be drained to retrieve accumulated output.
+pub struct LogDevice {
+    buffer: String,
+}
+
+impl LogDevice {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+        }
+    }
+
+    /// Drain all accumulated output, leaving the buffer empty.
+    pub fn drain_output(&mut self) -> String {
+        std::mem::take(&mut self.buffer)
+    }
+
+    /// Read all accumulated output without clearing.
+    pub fn output(&self) -> &str {
+        &self.buffer
+    }
+}
+
+impl Default for LogDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RamLike for LogDevice {
     fn load(&self, _addr: u32, _size: u32) -> Result<u32, ()> {
@@ -893,7 +925,9 @@ impl RamLike for LogDevice {
         if size != 32 {
             return Err(());
         }
-        print!("{}", char::from_u32(value).unwrap());
+        if let Some(ch) = char::from_u32(value) {
+            self.buffer.push(ch);
+        }
         Ok(())
     }
 
@@ -909,9 +943,7 @@ impl RamLike for LogDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu::instruction::{
-        AFunct, FLFunct, FSFunct, IFunct, Instruction, MFunct, SFunct,
-    };
+    use crate::cpu::instruction::{AFunct, FLFunct, FSFunct, IFunct, Instruction, MFunct, SFunct};
 
     struct TestRam {
         bytes: Vec<u8>,

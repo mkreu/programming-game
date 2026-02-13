@@ -240,7 +240,7 @@ impl RamLike for SplineDevice {
         if size != 32 {
             return Err(());
         }
-        
+
         let addr = addr as usize;
         match addr {
             0x04 => {
@@ -263,7 +263,7 @@ impl RamLike for SplineDevice {
         if size != 32 {
             return Err(());
         }
-        
+
         let addr = addr as usize;
         match addr {
             0x00 => {

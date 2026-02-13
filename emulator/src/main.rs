@@ -20,7 +20,7 @@ fn main() {
 }
 
 fn run_plain(mut cpu: Hart, mut dram: Dram) {
-    let mut log = LogDevice;
+    let mut log = LogDevice::new();
     let mut devices: Vec<&mut dyn RamLike> = vec![&mut log];
     let mut mmu = Mmu::new(&mut dram, &mut devices);
     loop {
