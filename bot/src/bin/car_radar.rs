@@ -64,25 +64,18 @@ fn main() -> ! {
             .set_steering(current_steer * (1.0 - steer_blend) + desired_steer * steer_blend);
 
         // Speed policy from front clearance and current speed.
-        let mut accel: f32 = 0.1;
+        let mut accel: f32 = 0.3;
         let mut brake: f32 = 0.0;
-
-        if c < 5.0 {
-            accel = 0.0;
-            brake = 1.0;
-        } else if c < 9.0 {
-            accel = 0.0;
-            brake = 0.6;
-        } else if c < 14.0 {
-            accel = 0.04;
-            brake = 0.0;
-        }
+        
+        if c < 30.0 {
+            brake = 1.0 * 1.0f32.min((speed-10.0).max(0.0) / 100.0);
+        } 
 
         // Additional high-speed caution when forward space is limited.
-        if speed > 20.0 && c < 18.0 {
+        /*if speed > 20.0 && c < 18.0 {
             accel = accel.min(0.03);
             brake = brake.max(0.25);
-        }
+        }*/
 
         car_controls.set_accelerator(accel);
         car_controls.set_brake(brake);

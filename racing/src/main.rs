@@ -654,7 +654,7 @@ fn apply_car_forces(
         let forward = transform.up().xy().normalize();
         let left = forward.perp();
 
-        if car.brake > 0.0 {
+        if car.brake > 0.0{
             forces.apply_linear_acceleration(forward * -braking * car.brake);
             if show_gizmos {
                 gizmos.arrow_2d(

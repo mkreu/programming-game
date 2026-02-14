@@ -21,14 +21,14 @@ fn main() -> ! {
     let car_state = CarState::bind(bot::SLOT2);
     let mut car_controls = CarControls::bind(bot::SLOT3);
     let mut spline = SplineQuery::bind(bot::SLOT4);
-    
+
     // Read t_max once at startup
     spline.query(0.0);
     let t_max = spline.t_max();
-    
+
     // Track our position along the spline
     let mut target_t = 0.0;
-    
+
     loop {
         let car_pos = car_state.position();
         let car_forward = car_state.forward();
@@ -76,39 +76,6 @@ fn main() -> ! {
 
         target_t = current_t;
 
-        // Calculate curvature ahead to determine braking
-        let curvature_lookahead = 15.0; // Look further ahead for braking
-        let mut curve_t = best_t;
-        let mut curve_traveled = 0.0;
-
-        // Sample points ahead to measure curvature
-        let mut max_curvature: f32 = 0.0;
-
-        while curve_traveled < curvature_lookahead {
-            let step = t_max / 2000.0;
-            let next_t = (curve_t + step) % t_max;
-            let prev_t = if curve_t < step {
-                t_max + curve_t - step
-            } else {
-                curve_t - step
-            };
-
-            // Calculate curvature using three points
-            let p_prev = spline.query(prev_t);
-            let p_curr = spline.query(curve_t);
-            let p_next = spline.query(next_t);
-
-            let v1 = (p_curr - p_prev).normalize();
-            let v2 = (p_next - p_curr).normalize();
-
-            // Angle change indicates curvature
-            let angle_change = v1.angle_to(v2).abs();
-            max_curvature = max_curvature.max(angle_change);
-
-            curve_traveled += p_curr.distance(p_next);
-            curve_t = next_t;
-        }
-
         let target_pos = spline.query(target_t);
 
         // Calculate steering to target
@@ -120,26 +87,12 @@ fn main() -> ! {
         let max_steer = PI / 6.0;
         let desired_steer = (-angle_to_target * 0.8).clamp(-max_steer, max_steer);
         let steer_blend = 0.1; // How quickly to change steering (lower = smoother)
-        car_controls.set_steering(car_controls.steering() * (1.0 - steer_blend) + desired_steer * steer_blend);
+        car_controls.set_steering(
+            car_controls.steering() * (1.0 - steer_blend) + desired_steer * steer_blend,
+        );
 
-        // Determine acceleration/braking based on curvature ahead
-        let curvature_threshold_brake = 0.05; // Start braking at tight turns
-        let curvature_threshold_caution = 0.02; // Reduce throttle at moderate turns
-
-        if max_curvature > curvature_threshold_brake {
-            // Sharp turn ahead - brake
-            car_controls.set_accelerator(0.0);
-            car_controls.set_brake(((max_curvature - curvature_threshold_brake) * 10.0).min(1.0));
-        } else if max_curvature > curvature_threshold_caution {
-            // Moderate turn - reduce throttle
-            let throttle_reduction = (max_curvature - curvature_threshold_caution)
-                / (curvature_threshold_brake - curvature_threshold_caution);
-            car_controls.set_accelerator((1.0 - throttle_reduction * 0.7).max(0.3) * 0.1);
-            car_controls.set_brake(0.0);
-        } else {
-            // Straight or gentle curve - full throttle
-            car_controls.set_accelerator(1.0 * 0.1);
-            car_controls.set_brake(0.0);
-        }
+        // Straight or gentle curve - full throttle
+        car_controls.set_accelerator(1.0 * 0.1);
+        car_controls.set_brake(0.0);
     }
 }
