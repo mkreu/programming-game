@@ -1,5 +1,3 @@
-use std::any::Any;
-
 use bevy::prelude::Component;
 use elf::{ElfBytes, abi::PT_LOAD, endian::LittleEndian};
 use tracing::{debug, trace};
@@ -868,10 +866,6 @@ impl RamLike for Mmu<'_, '_, '_> {
 pub trait Device: Send + Sync {
     fn load(&self, addr: u32, size: u32) -> Result<u32, ()>;
     fn store(&mut self, addr: u32, size: u32, value: u32) -> Result<(), ()>;
-    /// Support downcasting to concrete types.
-    fn as_any(&self) -> &dyn Any;
-    /// Support downcasting to concrete types (mutable).
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Memory-mapped log device that captures character output into a buffer.
@@ -919,14 +913,6 @@ impl Device for LogDevice {
             self.buffer.push(ch);
         }
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
