@@ -34,7 +34,7 @@ Bot binaries are now discovered at runtime via `cargo metadata` in `bot/`. When 
 **Must remain use-case agnostic.** No car/racing-specific code belongs here.
 
 - **`cpu.rs`** — Core emulator: `Hart` (32 GPRs, 32 FPRs, PC, LR/SC reservation), `Dram` (ELF-backed memory with stack headroom), `Mmu` (routes memory accesses to DRAM or devices), `LogDevice` (buffered char output with `drain_output()` and `output()` methods)
-- **`bevy.rs`** — `CpuComponent` holds a `Hart`, `Dram`, and `Vec<Box<dyn Device>>` of devices. Use `CpuComponent::new(elf, devices, instructions_per_update)` to create. `cpu_system` is a public system function; the consumer must register it in `FixedUpdate` with appropriate run conditions.
+- **`bevy.rs`** — `CpuComponent` holds only CPU core state (`Hart`, `Dram`, instruction budget). MMIO devices are first-class Bevy components on the same entity. Slot mapping is provided by consumer-defined `CpuConfig` (`slot -> device component`) and consumed by generic `cpu_system::<Config>`. Use `CpuComponent::new(elf, instructions_per_update)` to create and register `cpu_system::<YourCpuConfig>` in `FixedUpdate`. For less boilerplate, use `emulator::define_cpu_config!`.
 - **`lib.rs`** — `CpuBuilder` helper
 
 **`Device` trait** (`cpu.rs`) — The memory interface for devices:
@@ -61,11 +61,7 @@ pub trait Device: Send + Sync {
 
 Devices receive **offset-relative addresses** (i.e., `addr & 0xFF`), not absolute addresses.
 
-**`CpuComponent` device access** — Use typed downcasting:
-```rust
-cpu.device_as::<CarStateDevice>(1)       // &CarStateDevice
-cpu.device_as_mut::<CarControlsDevice>(2) // &mut CarControlsDevice
-```
+**Device ECS access** — Query device components directly from Bevy systems (e.g. `Query<(&mut CarStateDevice, &mut TrackRadarDevice)>`). Do not store devices in `CpuComponent`.
 
 ### `bot/` — RISC-V Bot Programs
 
@@ -145,6 +141,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 - `Car` — steering, accelerator, brake state (used by physics)
 - `EmulatorDriver` — marker component for RISC-V-emulator-driven cars
 - `CpuComponent` (from emulator crate) — attached to emulator-driven cars
+- `LogDevice`, `CarStateDevice`, `CarControlsDevice`, `SplineDevice`, `TrackRadarDevice`, `CarRadarDevice` — MMIO device components attached to emulator-driven cars
 - `CarLabel` — name label for each car
 - `DebugGizmos` — marker; when present on a car, debug gizmos are drawn (off by default)
 - `FrontWheel` — visual wheel rotation marker
@@ -160,13 +157,15 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 **System execution order:**
 1. `Update`: `handle_car_input` (keyboard → `Car`, excludes AI/emulator cars)
 2. `FixedUpdate` (in order, only in `Racing` state):
-    - `update_emulator_driver` — writes physics state (position, velocity, forward direction) into `CarStateDevice`, updates `TrackRadarDevice` (border ray distances), and updates `CarRadarDevice` (nearest car absolute positions) (**before** `cpu_system`)
-   - `cpu_system` — runs N RISC-V instructions per tick; bot queries `SplineDevice` and computes controls (emulator crate)
-   - `apply_emulator_controls` — reads `CarControlsDevice` → `Car` (**after** `cpu_system`)
+    - `update_car_state_device` — writes physics state (position, velocity, forward direction) into `CarStateDevice` (**before** CPU execution system)
+    - `update_track_radar_device` — updates `TrackRadarDevice` border ray distances (**before** CPU execution system)
+    - `update_car_radar_device` — updates `CarRadarDevice` nearest-car absolute positions (**before** CPU execution system)
+    - CPU execution system (`cpu_system::<YourCpuConfig>`) — runs N RISC-V instructions per tick; bot queries `SplineDevice` and computes controls
+   - `apply_emulator_controls` — reads `CarControlsDevice` → `Car` (**after** CPU execution system)
    - `apply_car_forces` — applies `Car` state to physics forces
 3. `Update` (always): UI systems (car list rebuild, button handlers, console output drain), `update_camera`, `draw_gizmos`, `update_fps_counter`
 
-**Car spawning** — Event-driven via `SpawnCarRequest` message. The UI sends a `SpawnCarRequest` with a `DriverType`; `handle_spawn_car_event` creates the car entity with staggered grid positioning. Cars can only be added/removed in `PreRace` state. Each emulator car gets its own isolated CPU, memory, device set, and SplineDevice containing a clone of the track spline.
+**Car spawning** — Event-driven via `SpawnCarRequest` message. The UI sends a `SpawnCarRequest` with a `DriverType`; `handle_spawn_car_event` creates the car entity with staggered grid positioning. Cars can only be added/removed in `PreRace` state. Each emulator car gets its own isolated CPU (`CpuComponent`) and isolated MMIO device components; each car has its own `SplineDevice` with a cloned copy of the track spline.
 
 **Camera** — Free camera by default (no cars spawned at startup). Middle/right-mouse drag to pan, scroll to zoom. When a car is selected via the UI "follow" button, the camera snaps to it; clicking again unfollows.
 
@@ -174,9 +173,11 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 ## Key Architectural Decisions
 
+0. **No compatibility stubs unless requested** — When refactoring APIs, do not keep unused backward-compatibility code paths, deprecated wrappers, or dead shim layers unless explicitly requested. Prefer deleting old forms and updating all call sites.
+
 1. **Emulator is use-case agnostic** — Car-specific devices (`CarStateDevice`, `CarControlsDevice`, `SplineDevice`) live in `racing/`, not in `emulator/`. The emulator only provides `Device`, `Mmu`, `LogDevice` (buffered), `CpuComponent`, and the plugin.
 
-2. **Each emulator car is fully isolated** — Separate `Hart`, `Dram`, and device instances per car entity. No shared state between emulator instances. Each car has its own `SplineDevice` with a cloned copy of the track spline.
+2. **Each emulator car is fully isolated** — Separate `Hart`, `Dram`, and device-component instances per car entity. No shared state between emulator instances. Each car has its own `SplineDevice` with a cloned copy of the track spline.
 
 3. **Device addressing** — The `Mmu` strips the high bits and passes offset-relative addresses (`addr & 0xFF`) to devices. Devices don't need to know their absolute slot address.
 

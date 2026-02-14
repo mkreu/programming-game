@@ -14,6 +14,7 @@ use crate::track::TrackSpline;
 ///   0x08: position_y
 ///   0x0C: forward_x
 ///   0x10: forward_y
+#[derive(Component)]
 pub struct CarStateDevice {
     data: [u8; 20], // 5 × f32
 }
@@ -93,6 +94,7 @@ impl Device for CarStateDevice {
 ///   0x00: accelerator
 ///   0x04: brake
 ///   0x08: steering
+#[derive(Component)]
 pub struct CarControlsDevice {
     data: [u8; 12], // 3 × f32
 }
@@ -215,6 +217,7 @@ impl Device for CarControlsDevice {
 ///   0x04: x (read)  - resulting X coordinate of sampled position
 ///   0x08: y (read)  - resulting Y coordinate of sampled position
 ///   0x0C: t_max (read) - maximum value of t (spline domain end)
+#[derive(Component)]
 pub struct SplineDevice {
     spline: CubicCurve<Vec2>,
     t_max: f32,
@@ -300,6 +303,7 @@ impl Device for SplineDevice {
 ///
 /// Distances are nearest-hit distances in world units. If a ray has no hit,
 /// the value is NaN.
+#[derive(Component)]
 pub struct TrackRadarDevice {
     data: [u8; 28], // 7 × f32
 }
@@ -383,6 +387,7 @@ impl Device for TrackRadarDevice {
 ///   0x1C: car3_y
 ///
 /// Missing entries are encoded as NaN/NaN.
+#[derive(Component)]
 pub struct CarRadarDevice {
     data: [u8; 32], // 8 × f32
 }

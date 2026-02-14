@@ -171,9 +171,11 @@ fn main() {
         .add_systems(
             FixedUpdate,
             (
-                update_emulator_driver.before(cpu_system),
-                cpu_system,
-                apply_emulator_controls.after(cpu_system),
+                update_car_state_device.before(cpu_system::<RacingCpuConfig>),
+                update_track_radar_device.before(cpu_system::<RacingCpuConfig>),
+                update_car_radar_device.before(cpu_system::<RacingCpuConfig>),
+                cpu_system::<RacingCpuConfig>,
+                apply_emulator_controls.after(cpu_system::<RacingCpuConfig>),
             )
                 .run_if(in_state(SimState::Racing)),
         )
@@ -516,16 +518,17 @@ fn spawn_car(
     let Some(bot_elf) = bot_elf else {
         panic!("Missing bot ELF bytes for emulator-driven car");
     };
-    let devices: Vec<Box<dyn emulator::cpu::Device>> = vec![
-        Box::new(LogDevice::new()),
-        Box::new(CarStateDevice::default()),
-        Box::new(CarControlsDevice::default()),
-        Box::new(SplineDevice::new(track_spline)),
-        Box::new(TrackRadarDevice::default()),
-        Box::new(CarRadarDevice::default()),
-    ];
-    let cpu = CpuComponent::new(bot_elf, devices, 10000);
-    entity.insert((EmulatorDriver, cpu));
+    let cpu = CpuComponent::new(bot_elf, 10000);
+    entity.insert((
+        EmulatorDriver,
+        cpu,
+        LogDevice::default(),
+        CarStateDevice::default(),
+        CarControlsDevice::default(),
+        SplineDevice::new(track_spline),
+        TrackRadarDevice::default(),
+        CarRadarDevice::default(),
+    ));
 
     let entity_id = entity.id();
 
@@ -588,6 +591,17 @@ struct EmulatorDriver;
 #[derive(Component)]
 struct FrontWheel;
 
+emulator::define_cpu_config! {
+    RacingCpuConfig {
+        1 => LogDevice,
+        2 => CarStateDevice,
+        3 => CarControlsDevice,
+        4 => SplineDevice,
+        5 => TrackRadarDevice,
+        6 => CarRadarDevice,
+    }
+}
+
 fn handle_car_input(
     mut car_query: Query<&mut Car, Without<EmulatorDriver>>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -620,44 +634,51 @@ fn handle_car_input(
     }
 }
 
-/// Runs BEFORE cpu_system: writes car state into the emulator's CarStateDevice.
-fn update_emulator_driver(
+/// Runs BEFORE cpu_system::<RacingCpuConfig>: writes host car kinematics into CarStateDevice.
+fn update_car_state_device(
+    mut emu_query: Query<(&Transform, &LinearVelocity, &mut CarStateDevice)>,
+) {
+    for (transform, velocity, mut state_dev) in &mut emu_query {
+        let car_pos = transform.translation.xy();
+        let car_forward = transform.up().xy().normalize();
+        let car_speed = velocity.length();
+        state_dev.update(car_speed, car_pos, car_forward);
+    }
+}
+
+/// Runs BEFORE cpu_system::<RacingCpuConfig>: writes border ray distances into TrackRadarDevice.
+fn update_track_radar_device(
     borders: Res<TrackRadarBorders>,
+    mut emu_query: Query<(&Transform, &mut TrackRadarDevice)>,
+) {
+    for (transform, mut track_radar_dev) in &mut emu_query {
+        let car_pos = transform.translation.xy();
+        let car_forward = transform.up().xy().normalize();
+        track_radar_dev.update(compute_track_radar_distances(
+            car_pos,
+            car_forward,
+            &borders,
+        ));
+    }
+}
+
+/// Runs BEFORE cpu_system::<RacingCpuConfig>: writes nearest-car positions into CarRadarDevice.
+fn update_car_radar_device(
     all_cars: Query<(Entity, &Transform), With<Car>>,
-    mut emu_query: Query<
-        (Entity, &Transform, &LinearVelocity, &mut CpuComponent),
-        With<EmulatorDriver>,
-    >,
+    mut emu_query: Query<(Entity, &Transform, &mut CarRadarDevice)>,
 ) {
     let car_positions: Vec<(Entity, Vec2)> = all_cars
         .iter()
         .map(|(entity, transform)| (entity, transform.translation.xy()))
         .collect();
 
-    for (entity, transform, velocity, mut cpu) in &mut emu_query {
+    for (entity, transform, mut car_radar_dev) in &mut emu_query {
         let car_pos = transform.translation.xy();
-        let car_forward = transform.up().xy().normalize();
-        let car_speed = velocity.length();
-
-        if let Some(state_dev) = cpu.device_as_mut::<CarStateDevice>(1) {
-            state_dev.update(car_speed, car_pos, car_forward);
-        }
-
-        if let Some(track_radar_dev) = cpu.device_as_mut::<TrackRadarDevice>(4) {
-            track_radar_dev.update(compute_track_radar_distances(
-                car_pos,
-                car_forward,
-                &borders,
-            ));
-        }
-
-        if let Some(car_radar_dev) = cpu.device_as_mut::<CarRadarDevice>(5) {
-            car_radar_dev.update(compute_nearest_car_positions(
-                entity,
-                car_pos,
-                &car_positions,
-            ));
-        }
+        car_radar_dev.update(compute_nearest_car_positions(
+            entity,
+            car_pos,
+            &car_positions,
+        ));
     }
 }
 
@@ -773,14 +794,12 @@ fn compute_nearest_car_positions(
     result
 }
 
-/// Runs AFTER cpu_system: reads the bot's control outputs and applies them.
-fn apply_emulator_controls(mut emu_query: Query<(&mut Car, &CpuComponent), With<EmulatorDriver>>) {
-    for (mut car, cpu) in &mut emu_query {
-        if let Some(ctrl_dev) = cpu.device_as::<CarControlsDevice>(2) {
-            car.accelerator = ctrl_dev.accelerator();
-            car.brake = ctrl_dev.brake();
-            car.steer = ctrl_dev.steering();
-        }
+/// Runs AFTER cpu_system::<RacingCpuConfig>: reads control outputs and applies them.
+fn apply_emulator_controls(mut emu_query: Query<(&mut Car, &CarControlsDevice)>) {
+    for (mut car, ctrl_dev) in &mut emu_query {
+        car.accelerator = ctrl_dev.accelerator();
+        car.brake = ctrl_dev.brake();
+        car.steer = ctrl_dev.steering();
     }
 }
 

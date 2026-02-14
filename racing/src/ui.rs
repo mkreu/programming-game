@@ -586,30 +586,26 @@ fn update_car_list_ui(
 
 fn update_console_output(
     mut manager: ResMut<RaceManager>,
-    mut cpu_query: Query<(&CarLabel, &mut CpuComponent)>,
+    mut cpu_query: Query<(&CarLabel, &mut emulator::cpu::LogDevice)>,
     container_query: Query<Entity, With<ConsoleTextContainer>>,
     mut commands: Commands,
     existing_texts: Query<Entity, (With<Text>, With<ConsoleText>)>,
 ) {
-    use emulator::cpu::LogDevice;
-
     // Drain output from all emulator cars
     let mut any_new = false;
-    for (label, mut cpu) in &mut cpu_query {
-        if let Some(log_dev) = cpu.device_as_mut::<LogDevice>(0) {
-            let output = log_dev.drain_output();
-            if !output.is_empty() {
-                // Find the car entry and append
-                if let Some(entry) = manager.cars.iter_mut().find(|c| c.name == label.name) {
-                    entry.console_output.push_str(&output);
-                    // Cap at a reasonable size
-                    if entry.console_output.len() > 8192 {
-                        let start = entry.console_output.len() - 4096;
-                        let trimmed = entry.console_output[start..].to_string();
-                        entry.console_output = trimmed;
-                    }
-                    any_new = true;
+    for (label, mut log_dev) in &mut cpu_query {
+        let output = log_dev.drain_output();
+        if !output.is_empty() {
+            // Find the car entry and append
+            if let Some(entry) = manager.cars.iter_mut().find(|c| c.name == label.name) {
+                entry.console_output.push_str(&output);
+                // Cap at a reasonable size
+                if entry.console_output.len() > 8192 {
+                    let start = entry.console_output.len() - 4096;
+                    let trimmed = entry.console_output[start..].to_string();
+                    entry.console_output = trimmed;
                 }
+                any_new = true;
             }
         }
     }
@@ -656,6 +652,3 @@ fn update_console_output(
 
 #[derive(Component)]
 struct ConsoleText;
-
-// We need CpuComponent in scope for the console system
-use emulator::bevy::CpuComponent;

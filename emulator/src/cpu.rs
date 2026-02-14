@@ -1,5 +1,6 @@
 use std::any::Any;
 
+use bevy::prelude::Component;
 use elf::{ElfBytes, abi::PT_LOAD, endian::LittleEndian};
 use tracing::{debug, trace};
 
@@ -821,18 +822,18 @@ impl Dram {
     }
 }
 
-pub struct Mmu<'a> {
-    pub dram: &'a mut Dram,
-    pub devices: &'a mut [&'a mut dyn Device],
+pub struct Mmu<'dram, 'slice, 'dev> {
+    pub dram: &'dram mut Dram,
+    pub devices: &'slice mut [&'dev mut dyn Device],
 }
 
-impl<'a> Mmu<'a> {
-    pub fn new(dram: &'a mut Dram, devices: &'a mut [&'a mut dyn Device]) -> Self {
+impl<'dram, 'slice, 'dev> Mmu<'dram, 'slice, 'dev> {
+    pub fn new(dram: &'dram mut Dram, devices: &'slice mut [&'dev mut dyn Device]) -> Self {
         Self { dram, devices }
     }
 }
 
-impl RamLike for Mmu<'_> {
+impl RamLike for Mmu<'_, '_, '_> {
     fn load(&self, addr: u32, size: u32) -> Result<u32, ()> {
         if addr >= 0x1000 {
             self.dram.load(addr, size)
@@ -876,6 +877,7 @@ pub trait Device: Send + Sync {
 /// Memory-mapped log device that captures character output into a buffer.
 /// Characters are written as 32-bit values (Unicode code points).
 /// The buffer can be drained to retrieve accumulated output.
+#[derive(Component)]
 pub struct LogDevice {
     buffer: String,
 }
