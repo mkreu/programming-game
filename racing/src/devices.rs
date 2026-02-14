@@ -306,9 +306,7 @@ pub struct TrackRadarDevice {
 
 impl Default for TrackRadarDevice {
     fn default() -> Self {
-        Self {
-            data: [0u8; 28],
-        }
+        Self { data: [0u8; 28] }
     }
 }
 
@@ -391,9 +389,7 @@ pub struct CarRadarDevice {
 
 impl Default for CarRadarDevice {
     fn default() -> Self {
-        Self {
-            data: [0u8; 32],
-        }
+        Self { data: [0u8; 32] }
     }
 }
 

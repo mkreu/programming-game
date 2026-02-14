@@ -4,8 +4,6 @@
 
 A racing game prototype where cars can be driven by AI implemented as **RISC-V programs** running inside an emulator. The goal is to let users write bare-metal RISC-V code (in Rust, `no_std`) that controls a car via memory-mapped I/O, while the game handles physics, rendering, and track management.
 
-There is also a native (Rust-side) AI driver for comparison.
-
 ## Workspace Structure
 
 ```
@@ -145,7 +143,6 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 **Key components:**
 - `Car` — steering, accelerator, brake state (used by physics)
-- `AIDriver` — native Rust AI (spline-following with curvature-based braking)
 - `EmulatorDriver` — marker component for RISC-V-emulator-driven cars
 - `CpuComponent` (from emulator crate) — attached to emulator-driven cars
 - `CarLabel` — name label for each car
@@ -161,7 +158,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 - `SpawnCarRequest { driver: DriverType }` — sent by UI "Add Car" button, consumed by `handle_spawn_car_event`
 
 **System execution order:**
-1. `Update`: `handle_car_input` (keyboard → `Car`, excludes AI/emulator cars), `update_ai_driver` (native AI → `Car`, only in `Racing` state)
+1. `Update`: `handle_car_input` (keyboard → `Car`, excludes AI/emulator cars)
 2. `FixedUpdate` (in order, only in `Racing` state):
     - `update_emulator_driver` — writes physics state (position, velocity, forward direction) into `CarStateDevice`, updates `TrackRadarDevice` (border ray distances), and updates `CarRadarDevice` (nearest car absolute positions) (**before** `cpu_system`)
    - `cpu_system` — runs N RISC-V instructions per tick; bot queries `SplineDevice` and computes controls (emulator crate)

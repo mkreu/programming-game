@@ -53,7 +53,7 @@ mod main_game {
     #[derive(Resource)]
     pub struct RaceManager {
         pub cars: Vec<CarEntry>,
-        pub selected_driver: DriverType,
+        pub selected_driver: Option<DriverType>,
         pub next_car_id: u32,
     }
 
@@ -61,7 +61,7 @@ mod main_game {
         fn default() -> Self {
             Self {
                 cars: Vec::new(),
-                selected_driver: DriverType::NativeAI,
+                selected_driver: None,
                 next_car_id: 1,
             }
         }
@@ -75,17 +75,11 @@ mod main_game {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum DriverType {
-        NativeAI,
-        BotBinary(String),
-    }
+    pub struct DriverType(pub String);
 
     impl DriverType {
         pub fn label(&self) -> String {
-            match self {
-                DriverType::NativeAI => "Native AI".to_string(),
-                DriverType::BotBinary(binary) => format!("Bot: {binary}"),
-            }
+            format!("Bot: {}", self.0)
         }
     }
 
@@ -167,14 +161,13 @@ fn main() {
         .add_systems(OnEnter(SimState::Paused), pause_physics)
         .add_systems(OnEnter(SimState::PreRace), pause_physics)
         // Spawning: always active so cars can be added in PreRace
-        .add_systems(Update, (handle_spawn_car_event, process_compiled_bot_results))
+        .add_systems(
+            Update,
+            (handle_spawn_car_event, process_compiled_bot_results),
+        )
         // Keyboard driving: always active (only affects non-AI, non-emulator cars)
         .add_systems(Update, handle_car_input)
-        // AI + emulator: only run while Racing
-        .add_systems(
-            FixedUpdate,
-            update_ai_driver.run_if(in_state(SimState::Racing)),
-        )
+        // emulator AI: only run while Racing
         .add_systems(
             FixedUpdate,
             (
@@ -374,11 +367,6 @@ fn grid_offset(index: usize) -> Vec2 {
 
 fn handle_spawn_car_event(
     mut events: MessageReader<SpawnCarRequest>,
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    track_path: Res<TrackPath>,
-    track_spline: Res<track::TrackSpline>,
-    mut manager: ResMut<RaceManager>,
     mut compile_pipeline: ResMut<BotCompilePipeline>,
     state: Res<State<SimState>>,
 ) {
@@ -387,37 +375,26 @@ fn handle_spawn_car_event(
     }
 
     for event in events.read() {
-        match &event.driver {
-            DriverType::NativeAI => {
-                spawn_car_entry(
-                    &mut commands,
-                    &asset_server,
-                    &track_path,
-                    &track_spline,
-                    &mut manager,
-                    event.driver.clone(),
-                    None,
-                );
-            }
-            DriverType::BotBinary(binary) => {
-                let request_id = compile_pipeline.next_request_id;
-                compile_pipeline.next_request_id += 1;
-                compile_pipeline.pending.insert(request_id, event.driver.clone());
-                compile_pipeline.status_message = Some(format!("Compiling bot binary '{binary}'..."));
+        let binary = &event.driver.0;
 
-                if compile_pipeline
-                    .request_tx
-                    .send(CompileRequest {
-                        id: request_id,
-                        binary: binary.clone(),
-                    })
-                    .is_err()
-                {
-                    compile_pipeline.pending.remove(&request_id);
-                    compile_pipeline.status_message =
-                        Some("Failed to queue bot compile request".to_string());
-                }
-            }
+        let request_id = compile_pipeline.next_request_id;
+        compile_pipeline.next_request_id += 1;
+        compile_pipeline
+            .pending
+            .insert(request_id, event.driver.clone());
+        compile_pipeline.status_message = Some(format!("Compiling bot binary '{binary}'..."));
+
+        if compile_pipeline
+            .request_tx
+            .send(CompileRequest {
+                id: request_id,
+                binary: binary.clone(),
+            })
+            .is_err()
+        {
+            compile_pipeline.pending.remove(&request_id);
+            compile_pipeline.status_message =
+                Some("Failed to queue bot compile request".to_string());
         }
     }
 }
@@ -466,10 +443,8 @@ fn process_compiled_bot_results(
                     Some(format!("Compiled and spawned '{}'", result.binary));
             }
             Err(error) => {
-                compile_pipeline.status_message = Some(format!(
-                    "Compile failed for '{}': {}",
-                    result.binary, error
-                ));
+                compile_pipeline.status_message =
+                    Some(format!("Compile failed for '{}': {}", result.binary, error));
             }
         }
     }
@@ -497,7 +472,6 @@ fn spawn_car_entry(
         commands,
         asset_server,
         position,
-        driver.clone(),
         track_spline,
         &car_name,
         elf_bytes.as_deref(),
@@ -515,7 +489,6 @@ fn spawn_car(
     commands: &mut Commands,
     asset_server: &AssetServer,
     position: Vec2,
-    driver: DriverType,
     track_spline: &track::TrackSpline,
     name: &str,
     bot_elf: Option<&[u8]>,
@@ -540,26 +513,19 @@ fn spawn_car(
         },
     ));
 
-    match driver {
-        DriverType::NativeAI => {
-            entity.insert(AIDriver { target_t: 0.0 });
-        }
-        DriverType::BotBinary(_) => {
-            let Some(bot_elf) = bot_elf else {
-                panic!("Missing bot ELF bytes for emulator-driven car");
-            };
-            let devices: Vec<Box<dyn emulator::cpu::RamLike>> = vec![
-                Box::new(LogDevice::new()),
-                Box::new(CarStateDevice::default()),
-                Box::new(CarControlsDevice::default()),
-                Box::new(SplineDevice::new(track_spline)),
-                Box::new(TrackRadarDevice::default()),
-                Box::new(CarRadarDevice::default()),
-            ];
-            let cpu = CpuComponent::new(bot_elf, devices, 10000);
-            entity.insert((EmulatorDriver, cpu));
-        }
-    }
+    let Some(bot_elf) = bot_elf else {
+        panic!("Missing bot ELF bytes for emulator-driven car");
+    };
+    let devices: Vec<Box<dyn emulator::cpu::RamLike>> = vec![
+        Box::new(LogDevice::new()),
+        Box::new(CarStateDevice::default()),
+        Box::new(CarControlsDevice::default()),
+        Box::new(SplineDevice::new(track_spline)),
+        Box::new(TrackRadarDevice::default()),
+        Box::new(CarRadarDevice::default()),
+    ];
+    let cpu = CpuComponent::new(bot_elf, devices, 10000);
+    entity.insert((EmulatorDriver, cpu));
 
     let entity_id = entity.id();
 
@@ -617,18 +583,13 @@ struct Car {
 }
 
 #[derive(Component)]
-struct AIDriver {
-    target_t: f32,
-}
-
-#[derive(Component)]
 struct EmulatorDriver;
 
 #[derive(Component)]
 struct FrontWheel;
 
 fn handle_car_input(
-    mut car_query: Query<&mut Car, (Without<AIDriver>, Without<EmulatorDriver>)>,
+    mut car_query: Query<&mut Car, Without<EmulatorDriver>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     for mut car in &mut car_query {
@@ -655,134 +616,6 @@ fn handle_car_input(
             } else {
                 (car.steer + steer_rate).min(0.0)
             };
-        }
-    }
-}
-
-fn update_ai_driver(
-    mut ai_query: Query<(
-        Entity,
-        &Transform,
-        &mut Car,
-        &mut AIDriver,
-        &LinearVelocity,
-        Has<DebugGizmos>,
-    )>,
-    track: Option<Res<track::TrackSpline>>,
-    mut gizmos: Gizmos,
-) {
-    let Some(track) = track else {
-        return;
-    };
-
-    let domain = track.spline.domain();
-    let t_max = domain.end();
-
-    for (_entity, transform, mut car, mut ai, velocity, show_gizmos) in &mut ai_query {
-        let car_pos = transform.translation.xy();
-        let car_forward = transform.up().xy().normalize();
-        let car_speed = velocity.length();
-
-        let mut best_t = ai.target_t;
-        let mut best_score = f32::MAX;
-
-        let window_samples = 50;
-        let window_size = t_max * 0.1;
-        for i in 0..window_samples {
-            let offset = (i as f32 / window_samples as f32) * window_size - window_size * 0.5;
-            let test_t = (ai.target_t + offset + t_max) % t_max;
-            let test_pos = track.spline.position(test_t);
-            let dist = car_pos.distance(test_pos);
-
-            let forward_bias = if offset > 0.0 { 0.0 } else { 2.0 };
-            let score = dist + forward_bias;
-
-            if score < best_score {
-                best_score = score;
-                best_t = test_t;
-            }
-        }
-
-        let base_lookahead = 2.0;
-        let speed_factor = (car_speed * 0.5).max(1.0);
-        let lookahead_distance = base_lookahead * speed_factor;
-
-        let mut current_t = best_t;
-        let mut traveled = 0.0;
-
-        while traveled < lookahead_distance {
-            let step = t_max / 2000.0;
-            let next_t = (current_t + step) % t_max;
-            let p1 = track.spline.position(current_t);
-            let p2 = track.spline.position(next_t);
-            traveled += p1.distance(p2);
-            current_t = next_t;
-        }
-
-        ai.target_t = current_t;
-
-        let curvature_lookahead = 15.0;
-        let mut curve_t = best_t;
-        let mut curve_traveled = 0.0;
-        let mut max_curvature: f32 = 0.0;
-
-        while curve_traveled < curvature_lookahead {
-            let step = t_max / 2000.0;
-            let next_t = (curve_t + step) % t_max;
-            let prev_t = if curve_t < step {
-                t_max + curve_t - step
-            } else {
-                curve_t - step
-            };
-
-            let p_prev = track.spline.position(prev_t);
-            let p_curr = track.spline.position(curve_t);
-            let p_next = track.spline.position(next_t);
-
-            let v1 = (p_curr - p_prev).normalize();
-            let v2 = (p_next - p_curr).normalize();
-
-            let angle_change = v1.angle_to(v2).abs();
-            max_curvature = max_curvature.max(angle_change);
-
-            curve_traveled += p_curr.distance(p_next);
-            curve_t = next_t;
-        }
-
-        let target_pos = track.spline.position(ai.target_t);
-
-        if show_gizmos {
-            gizmos.circle_2d(target_pos, 0.5, bevy::color::palettes::css::BLUE);
-            gizmos.line_2d(car_pos, target_pos, bevy::color::palettes::css::AQUA);
-            gizmos.arrow_2d(
-                car_pos,
-                car_pos + car_forward * 3.0,
-                bevy::color::palettes::css::LIME,
-            );
-        }
-
-        let to_target = (target_pos - car_pos).normalize();
-        let angle_to_target = car_forward.angle_to(to_target);
-
-        let max_steer = PI / 6.0;
-        let desired_steer = (-angle_to_target * 0.8).clamp(-max_steer, max_steer);
-        let steer_blend = 0.1;
-        car.steer = car.steer * (1.0 - steer_blend) + desired_steer * steer_blend;
-
-        let curvature_threshold_brake = 0.05;
-        let curvature_threshold_caution = 0.02;
-
-        if max_curvature > curvature_threshold_brake {
-            car.accelerator = 0.0;
-            car.brake = ((max_curvature - curvature_threshold_brake) * 10.0).min(1.0);
-        } else if max_curvature > curvature_threshold_caution {
-            let throttle_reduction = (max_curvature - curvature_threshold_caution)
-                / (curvature_threshold_brake - curvature_threshold_caution);
-            car.accelerator = (1.0 - throttle_reduction * 0.7).max(0.3) * 0.1;
-            car.brake = 0.0;
-        } else {
-            car.accelerator = 1.0 * 0.1;
-            car.brake = 0.0;
         }
     }
 }
@@ -819,7 +652,11 @@ fn update_emulator_driver(
         }
 
         if let Some(car_radar_dev) = cpu.device_as_mut::<CarRadarDevice>(5) {
-            car_radar_dev.update(compute_nearest_car_positions(entity, car_pos, &car_positions));
+            car_radar_dev.update(compute_nearest_car_positions(
+                entity,
+                car_pos,
+                &car_positions,
+            ));
         }
     }
 }

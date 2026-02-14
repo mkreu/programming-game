@@ -163,7 +163,7 @@ fn setup_ui(mut commands: Commands) {
                     ))
                     .with_children(|btn| {
                         btn.spawn((
-                            Text::new("Native AI"),
+                            Text::new("<Invalid>"),
                             DriverSelectorText,
                             text_font(14.0),
                             TextColor(TEXT_COLOR),
@@ -274,22 +274,26 @@ fn handle_driver_selector(
         if *interaction == Interaction::Pressed {
             let current_index = options
                 .iter()
-                .position(|driver| *driver == manager.selected_driver)
+                .position(|driver| Some(driver) == manager.selected_driver.as_ref())
                 .unwrap_or(0);
             let next_index = (current_index + 1) % options.len();
-            manager.selected_driver = options[next_index].clone();
+            manager.selected_driver = Some(options[next_index].clone());
 
             for mut text in &mut text_query {
-                text.0 = manager.selected_driver.label();
+                text.0 = manager
+                    .selected_driver
+                    .as_ref()
+                    .map(|d| d.label())
+                    .unwrap_or_else(|| "<Invalid>".to_string());
             }
         }
     }
 }
 
 fn available_driver_options(bot_binaries: &BotProjectBinaries) -> Vec<DriverType> {
-    let mut options = vec![DriverType::NativeAI];
+    let mut options = vec![];
     for binary in &bot_binaries.binaries {
-        options.push(DriverType::BotBinary(binary.clone()));
+        options.push(DriverType(binary.clone()));
     }
     options
 }
@@ -308,9 +312,11 @@ fn handle_add_car_button(
     }
     for interaction in &query {
         if *interaction == Interaction::Pressed {
-            spawn_events.write(SpawnCarRequest {
-                driver: manager.selected_driver.clone(),
-            });
+            if let Some(driver) = &manager.selected_driver {
+                spawn_events.write(SpawnCarRequest {
+                    driver: driver.clone(),
+                });
+            }
         }
     }
 }
