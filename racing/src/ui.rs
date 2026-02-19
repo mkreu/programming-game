@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::main_game::{
     BotCompilePipeline, BotProjectBinaries, CarLabel, DebugGizmos, DriverType, FollowCar,
-    RaceManager, SimState, SpawnCarRequest,
+    RaceManager, SimState, SpawnCarRequest, WebApiCommand, WebPortalState,
 };
 
 /// Plugin that sets up all UI systems.
@@ -10,13 +10,18 @@ pub struct RaceUiPlugin;
 
 impl Plugin for RaceUiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_ui)
+        app.init_resource::<UiTextInputState>()
+            .add_systems(Startup, setup_ui)
             .add_systems(
                 Update,
                 (
+                    handle_focus_clicks,
+                    handle_text_input,
                     update_car_list_ui,
                     handle_add_car_button,
                     handle_driver_selector,
+                    handle_web_buttons,
+                    update_web_ui_text,
                     update_build_status,
                     handle_remove_car_button,
                     handle_toggle_gizmos_button,
@@ -64,6 +69,36 @@ struct DriverSelectorText;
 #[derive(Component)]
 struct BuildStatusText;
 
+#[derive(Component)]
+struct WebStatusText;
+
+#[derive(Component)]
+struct ScriptsText;
+
+#[derive(Component)]
+struct ArtifactsText;
+
+#[derive(Component)]
+struct UsernameFieldText;
+
+#[derive(Component)]
+struct PasswordFieldText;
+
+#[derive(Component)]
+struct UsernameFieldButton;
+
+#[derive(Component)]
+struct PasswordFieldButton;
+
+#[derive(Component)]
+struct LoginButton;
+
+#[derive(Component)]
+struct LoadScriptsButton;
+
+#[derive(Component)]
+struct LoadArtifactsButton;
+
 /// Marks a remove button, storing the car entity it removes.
 #[derive(Component)]
 struct RemoveCarButton(Entity);
@@ -79,6 +114,17 @@ struct FollowCarButton(Entity);
 /// A single car list row, tied to a car entity.
 #[derive(Component)]
 struct CarListRow(#[allow(dead_code)] Entity);
+
+#[derive(Resource, Default)]
+struct UiTextInputState {
+    focused: Option<FocusedField>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FocusedField {
+    Username,
+    Password,
+}
 
 // ── Colours & constants ─────────────────────────────────────────────────────
 
@@ -178,6 +224,100 @@ fn setup_ui(mut commands: Commands) {
                 TextColor(LABEL_COLOR),
             ));
 
+            panel.spawn((
+                Text::new("Web Repository"),
+                text_font(16.0),
+                TextColor(LABEL_COLOR),
+            ));
+
+            panel
+                .spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(4.0),
+                    ..default()
+                })
+                .with_children(|web| {
+                    web.spawn((
+                        Button,
+                        UsernameFieldButton,
+                        button_style(),
+                        BackgroundColor(BTN_BG),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Username: <click to edit>"),
+                            UsernameFieldText,
+                            text_font(13.0),
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+
+                    web.spawn((
+                        Button,
+                        PasswordFieldButton,
+                        button_style(),
+                        BackgroundColor(BTN_BG),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Password: <click to edit>"),
+                            PasswordFieldText,
+                            text_font(13.0),
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+
+                    web.spawn((Button, LoginButton, button_style(), BackgroundColor(BTN_BG)))
+                        .with_children(|btn| {
+                            btn.spawn((Text::new("Login"), text_font(14.0), TextColor(TEXT_COLOR)));
+                        });
+                    web.spawn((
+                        Button,
+                        LoadScriptsButton,
+                        button_style(),
+                        BackgroundColor(BTN_BG),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Load Scripts"),
+                            text_font(14.0),
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+                    web.spawn((
+                        Button,
+                        LoadArtifactsButton,
+                        button_style(),
+                        BackgroundColor(BTN_BG),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Load Artifacts"),
+                            text_font(14.0),
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+
+                    web.spawn((
+                        Text::new("Web status: idle"),
+                        WebStatusText,
+                        text_font(12.0),
+                        TextColor(LABEL_COLOR),
+                    ));
+                    web.spawn((
+                        Text::new("Scripts: -"),
+                        ScriptsText,
+                        text_font(12.0),
+                        TextColor(LABEL_COLOR),
+                    ));
+                    web.spawn((
+                        Text::new("Artifacts: -"),
+                        ArtifactsText,
+                        text_font(12.0),
+                        TextColor(LABEL_COLOR),
+                    ));
+                });
+
             // ── Add Car / Start / Reset row ──
             panel
                 .spawn(Node {
@@ -268,8 +408,16 @@ fn handle_driver_selector(
     mut text_query: Query<&mut Text, With<DriverSelectorText>>,
     mut manager: ResMut<RaceManager>,
     bot_binaries: Res<BotProjectBinaries>,
+    web_state: Res<WebPortalState>,
 ) {
-    let options = available_driver_options(&bot_binaries);
+    let options = available_driver_options(&bot_binaries, &web_state);
+    if options.is_empty() {
+        for mut text in &mut text_query {
+            text.0 = "<No drivers>".to_string();
+        }
+        manager.selected_driver = None;
+        return;
+    }
     for interaction in &query {
         if *interaction == Interaction::Pressed {
             let current_index = options
@@ -290,12 +438,185 @@ fn handle_driver_selector(
     }
 }
 
-fn available_driver_options(bot_binaries: &BotProjectBinaries) -> Vec<DriverType> {
+fn available_driver_options(
+    bot_binaries: &BotProjectBinaries,
+    web_state: &WebPortalState,
+) -> Vec<DriverType> {
     let mut options = vec![];
     for binary in &bot_binaries.binaries {
-        options.push(DriverType(binary.clone()));
+        options.push(DriverType::LocalBinary(binary.clone()));
+    }
+    for artifact in &web_state.artifacts {
+        options.push(DriverType::RemoteArtifact { id: artifact.id });
     }
     options
+}
+
+fn handle_focus_clicks(
+    username_query: Query<&Interaction, (Changed<Interaction>, With<UsernameFieldButton>)>,
+    password_query: Query<&Interaction, (Changed<Interaction>, With<PasswordFieldButton>)>,
+    mut input_state: ResMut<UiTextInputState>,
+) {
+    for interaction in &username_query {
+        if *interaction == Interaction::Pressed {
+            input_state.focused = Some(FocusedField::Username);
+        }
+    }
+    for interaction in &password_query {
+        if *interaction == Interaction::Pressed {
+            input_state.focused = Some(FocusedField::Password);
+        }
+    }
+}
+
+fn handle_text_input(
+    mut keyboard_events: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    mut input_state: ResMut<UiTextInputState>,
+    mut web_state: ResMut<WebPortalState>,
+) {
+    let Some(focused) = input_state.focused else {
+        return;
+    };
+
+    for event in keyboard_events.read() {
+        if event.state != bevy::input::ButtonState::Pressed {
+            continue;
+        }
+
+        match event.logical_key {
+            bevy::input::keyboard::Key::Escape => {
+                input_state.focused = None;
+            }
+            bevy::input::keyboard::Key::Backspace => match focused {
+                FocusedField::Username => {
+                    web_state.username_input.pop();
+                }
+                FocusedField::Password => {
+                    web_state.password_input.pop();
+                }
+            },
+            bevy::input::keyboard::Key::Enter => {
+                input_state.focused = None;
+            }
+            _ => {
+                if let Some(text) = &event.text {
+                    for ch in text.chars() {
+                        if ch.is_control() {
+                            continue;
+                        }
+                        match focused {
+                            FocusedField::Username => web_state.username_input.push(ch),
+                            FocusedField::Password => web_state.password_input.push(ch),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_web_buttons(
+    login_query: Query<&Interaction, (Changed<Interaction>, With<LoginButton>)>,
+    load_scripts_query: Query<&Interaction, (Changed<Interaction>, With<LoadScriptsButton>)>,
+    load_artifacts_query: Query<&Interaction, (Changed<Interaction>, With<LoadArtifactsButton>)>,
+    mut web_commands: MessageWriter<WebApiCommand>,
+) {
+    for interaction in &login_query {
+        if *interaction == Interaction::Pressed {
+            web_commands.write(WebApiCommand::Login);
+        }
+    }
+    for interaction in &load_scripts_query {
+        if *interaction == Interaction::Pressed {
+            web_commands.write(WebApiCommand::LoadScripts);
+        }
+    }
+    for interaction in &load_artifacts_query {
+        if *interaction == Interaction::Pressed {
+            web_commands.write(WebApiCommand::LoadArtifacts);
+        }
+    }
+}
+
+fn update_web_ui_text(
+    web_state: Res<WebPortalState>,
+    input_state: Res<UiTextInputState>,
+    mut username_text_query: Query<&mut Text, With<UsernameFieldText>>,
+    mut password_text_query: Query<&mut Text, With<PasswordFieldText>>,
+    mut status_text_query: Query<&mut Text, With<WebStatusText>>,
+    mut scripts_text_query: Query<&mut Text, With<ScriptsText>>,
+    mut artifacts_text_query: Query<&mut Text, With<ArtifactsText>>,
+) {
+    if !web_state.is_changed() && !input_state.is_changed() {
+        return;
+    }
+
+    let username_prefix = if input_state.focused == Some(FocusedField::Username) {
+        "Username*: "
+    } else {
+        "Username: "
+    };
+    let password_prefix = if input_state.focused == Some(FocusedField::Password) {
+        "Password*: "
+    } else {
+        "Password: "
+    };
+
+    for mut text in &mut username_text_query {
+        let value = if web_state.username_input.is_empty() {
+            "<click to edit>".to_string()
+        } else {
+            web_state.username_input.clone()
+        };
+        text.0 = format!("{username_prefix}{value}");
+    }
+    for mut text in &mut password_text_query {
+        let masked = if web_state.password_input.is_empty() {
+            "<click to edit>".to_string()
+        } else {
+            "*".repeat(web_state.password_input.chars().count())
+        };
+        text.0 = format!("{password_prefix}{masked}");
+    }
+    for mut text in &mut status_text_query {
+        let user = web_state.logged_in_user.as_deref().unwrap_or("anonymous");
+        let status = web_state.status_message.as_deref().unwrap_or("idle");
+        text.0 = format!("Web status ({user}): {status}");
+    }
+
+    let script_summary = if web_state.scripts.is_empty() {
+        "-".to_string()
+    } else {
+        web_state
+            .scripts
+            .iter()
+            .take(3)
+            .map(|s| format!("{}#{}", s.name, s.id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for mut text in &mut scripts_text_query {
+        text.0 = format!("Scripts ({}): {}", web_state.scripts.len(), script_summary);
+    }
+
+    let artifact_summary = if web_state.artifacts.is_empty() {
+        "-".to_string()
+    } else {
+        web_state
+            .artifacts
+            .iter()
+            .take(4)
+            .map(|a| format!("#{}", a.id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for mut text in &mut artifacts_text_query {
+        text.0 = format!(
+            "Artifacts ({}): {}",
+            web_state.artifacts.len(),
+            artifact_summary
+        );
+    }
 }
 
 // ── Add car button ──────────────────────────────────────────────────────────
