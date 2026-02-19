@@ -541,11 +541,13 @@ fn handle_web_buttons(
 fn update_web_ui_text(
     web_state: Res<WebPortalState>,
     input_state: Res<UiTextInputState>,
-    mut username_text_query: Query<&mut Text, With<UsernameFieldText>>,
-    mut password_text_query: Query<&mut Text, With<PasswordFieldText>>,
-    mut status_text_query: Query<&mut Text, With<WebStatusText>>,
-    mut scripts_text_query: Query<&mut Text, With<ScriptsText>>,
-    mut artifacts_text_query: Query<&mut Text, With<ArtifactsText>>,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<UsernameFieldText>>,
+        Query<&mut Text, With<PasswordFieldText>>,
+        Query<&mut Text, With<WebStatusText>>,
+        Query<&mut Text, With<ScriptsText>>,
+        Query<&mut Text, With<ArtifactsText>>,
+    )>,
 ) {
     if !web_state.is_changed() && !input_state.is_changed() {
         return;
@@ -562,7 +564,7 @@ fn update_web_ui_text(
         "Password: "
     };
 
-    for mut text in &mut username_text_query {
+    for mut text in &mut texts.p0() {
         let value = if web_state.username_input.is_empty() {
             "<click to edit>".to_string()
         } else {
@@ -570,7 +572,7 @@ fn update_web_ui_text(
         };
         text.0 = format!("{username_prefix}{value}");
     }
-    for mut text in &mut password_text_query {
+    for mut text in &mut texts.p1() {
         let masked = if web_state.password_input.is_empty() {
             "<click to edit>".to_string()
         } else {
@@ -578,7 +580,7 @@ fn update_web_ui_text(
         };
         text.0 = format!("{password_prefix}{masked}");
     }
-    for mut text in &mut status_text_query {
+    for mut text in &mut texts.p2() {
         let user = web_state.logged_in_user.as_deref().unwrap_or("anonymous");
         let status = web_state.status_message.as_deref().unwrap_or("idle");
         text.0 = format!("Web status ({user}): {status}");
@@ -595,7 +597,7 @@ fn update_web_ui_text(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    for mut text in &mut scripts_text_query {
+    for mut text in &mut texts.p3() {
         text.0 = format!("Scripts ({}): {}", web_state.scripts.len(), script_summary);
     }
 
@@ -610,7 +612,7 @@ fn update_web_ui_text(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    for mut text in &mut artifacts_text_query {
+    for mut text in &mut texts.p4() {
         text.0 = format!(
             "Artifacts ({}): {}",
             web_state.artifacts.len(),
