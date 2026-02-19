@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(create_race_record).get(list_race_records),
         )
         .route("/api/v1/race-records/{id}", get(get_race_record))
-        .nest_service("/", ServeDir::new("web-dist"))
+        .fallback_service(ServeDir::new("web-dist"))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
