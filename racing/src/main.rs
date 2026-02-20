@@ -1,10 +1,10 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 use std::{
     collections::HashMap,
     f32::consts::PI,
     sync::{Arc, Mutex},
 };
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::PathBuf;
 
 use avian2d::prelude::{forces::ForcesItem, *};
 use base64::Engine;
@@ -17,9 +17,10 @@ use bevy::{
 use emulator::bevy::{CpuComponent, cpu_system};
 use emulator::cpu::LogDevice;
 use race_protocol::{
-    ArtifactSummary, LoginRequest, LoginResponse, ServerCapabilities, UploadArtifactRequest,
-    UploadArtifactResponse,
+    ArtifactSummary, ServerCapabilities, UploadArtifactRequest, UploadArtifactResponse,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use race_protocol::{LoginRequest, LoginResponse};
 #[cfg(not(target_arch = "wasm32"))]
 use racehub::{AuthMode, ServerConfig};
 
@@ -60,7 +61,6 @@ mod main_game {
     #[derive(Message)]
     pub enum WebApiCommand {
         RefreshCapabilities,
-        Login,
         LoadArtifacts,
         UploadArtifact,
     }
@@ -126,6 +126,7 @@ mod main_game {
     #[derive(Debug, Clone)]
     pub enum WebApiEvent {
         Capabilities(Result<ServerCapabilities, String>),
+        #[cfg(not(target_arch = "wasm32"))]
         Login(Result<LoginResponse, String>),
         Artifacts(Result<Vec<ArtifactSummary>, String>),
         UploadResult(Result<UploadArtifactResponse, String>),
@@ -149,10 +150,10 @@ mod main_game {
         pub server_url: String,
         pub standalone_mode: bool,
         pub auth_required: Option<bool>,
-        pub username_input: String,
-        pub password_input: String,
-        pub logged_in_user: Option<String>,
+        #[cfg(not(target_arch = "wasm32"))]
         pub token: Option<String>,
+        #[cfg(not(target_arch = "wasm32"))]
+        pub cli_credentials: Option<(String, String)>,
         pub artifacts: Vec<ArtifactSummary>,
         pub status_message: Option<String>,
     }
@@ -164,10 +165,10 @@ mod main_game {
                     .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string()),
                 standalone_mode: false,
                 auth_required: None,
-                username_input: String::new(),
-                password_input: String::new(),
-                logged_in_user: None,
+                #[cfg(not(target_arch = "wasm32"))]
                 token: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                cli_credentials: None,
                 artifacts: Vec::new(),
                 status_message: None,
             }
@@ -228,6 +229,22 @@ fn main() {
         web_state.server_url = url;
         web_state.standalone_mode = true;
         web_state.status_message = Some("Standalone mode: auth disabled".to_string());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if !web_state.standalone_mode {
+        match prompt_cli_credentials() {
+            Ok(Some((username, password))) => {
+                web_state.cli_credentials = Some((username.clone(), password));
+                web_state.status_message = Some(format!("Using CLI credentials for '{username}'"));
+            }
+            Ok(None) => {
+                web_state.status_message =
+                    Some("No CLI credentials provided; remote auth may fail".to_string());
+            }
+            Err(error) => {
+                web_state.status_message = Some(format!("CLI login prompt failed: {error}"));
+            }
+        }
     }
 
     App::new()
@@ -301,6 +318,39 @@ fn main() {
         .run();
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn prompt_cli_credentials() -> Result<Option<(String, String)>, String> {
+    use std::io::{self, Write};
+
+    print!("RaceHub username (leave empty to skip): ");
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("stdout flush failed: {e}"))?;
+    let mut username = String::new();
+    io::stdin()
+        .read_line(&mut username)
+        .map_err(|e| format!("failed to read username: {e}"))?;
+    let username = username.trim().to_string();
+    if username.is_empty() {
+        return Ok(None);
+    }
+
+    print!("RaceHub password: ");
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("stdout flush failed: {e}"))?;
+    let mut password = String::new();
+    io::stdin()
+        .read_line(&mut password)
+        .map_err(|e| format!("failed to read password: {e}"))?;
+    let password = password.trim_end().to_string();
+    if password.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some((username, password)))
+}
+
 #[derive(Resource)]
 struct TrackPath(String);
 
@@ -346,8 +396,12 @@ fn web_api_url(base: &str, path: &str) -> String {
     format!("{}{}", base.trim_end_matches('/'), path)
 }
 
-fn web_request_with_auth(url: String, token: Option<&str>) -> ehttp::Request {
+fn web_request_with_auth(url: String, _token: Option<&str>) -> ehttp::Request {
     let mut req = ehttp::Request::get(url);
+    #[cfg(not(target_arch = "wasm32"))]
+    let token = _token;
+    #[cfg(target_arch = "wasm32")]
+    let token: Option<&str> = None;
     if let Some(token) = token {
         req.headers
             .insert("Authorization", format!("Bearer {token}"));
@@ -366,6 +420,7 @@ fn response_error(resp: &ehttp::Response) -> String {
     format!("HTTP {} {}: {}", resp.status, resp.status_text, body.trim())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn web_fetch_login(
     server_url: &str,
     username: &str,
@@ -437,7 +492,7 @@ fn web_fetch_artifacts(server_url: &str, token: Option<&str>, queue: Arc<Mutex<V
 
 fn web_upload_artifact(
     server_url: &str,
-    token: Option<&str>,
+    _token: Option<&str>,
     name: String,
     note: Option<String>,
     elf: Vec<u8>,
@@ -465,6 +520,10 @@ fn web_upload_artifact(
         }
     };
     request.method = "POST".to_string();
+    #[cfg(not(target_arch = "wasm32"))]
+    let token = _token;
+    #[cfg(target_arch = "wasm32")]
+    let token: Option<&str> = None;
     if let Some(token) = token {
         request
             .headers
@@ -519,11 +578,20 @@ fn web_fetch_artifact_elf(
 
 fn maybe_auth_token(web_state: &WebPortalState) -> Result<Option<String>, String> {
     match web_state.auth_required {
-        Some(true) => web_state
-            .token
-            .clone()
-            .map(Some)
-            .ok_or_else(|| "Login required".to_string()),
+        Some(true) => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                Ok(None)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                web_state
+                    .token
+                    .clone()
+                    .map(Some)
+                    .ok_or_else(|| "Login required".to_string())
+            }
+        }
         Some(false) => Ok(None),
         None => Err("Server capabilities not loaded yet".to_string()),
     }
@@ -531,9 +599,7 @@ fn maybe_auth_token(web_state: &WebPortalState) -> Result<Option<String>, String
 
 #[cfg(not(target_arch = "wasm32"))]
 fn pick_artifact_for_upload_native() -> Result<Option<(String, Vec<u8>)>, String> {
-    let Some(path) = rfd::FileDialog::new()
-        .pick_file()
-    else {
+    let Some(path) = rfd::FileDialog::new().pick_file() else {
         return Ok(None);
     };
     let bytes = std::fs::read(&path).map_err(|e| format!("failed to read file: {e}"))?;
@@ -551,10 +617,7 @@ fn pick_artifact_for_upload_web(
     queue: Arc<Mutex<Vec<WebApiEvent>>>,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
-        let Some(file) = rfd::AsyncFileDialog::new()
-            .pick_file()
-            .await
-        else {
+        let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else {
             return;
         };
         let bytes = file.read().await;
@@ -573,22 +636,6 @@ fn handle_web_api_commands(
             WebApiCommand::RefreshCapabilities => {
                 web_state.status_message = Some("Loading server capabilities...".to_string());
                 web_fetch_capabilities(&web_state.server_url, web_queue.events.clone());
-            }
-            WebApiCommand::Login => {
-                let username = web_state.username_input.trim().to_string();
-                let password = web_state.password_input.clone();
-                if username.is_empty() || password.is_empty() {
-                    web_state.status_message =
-                        Some("Username/password cannot be empty".to_string());
-                    continue;
-                }
-                web_state.status_message = Some("Logging in...".to_string());
-                web_fetch_login(
-                    &web_state.server_url,
-                    &username,
-                    &password,
-                    web_queue.events.clone(),
-                );
             }
             WebApiCommand::LoadArtifacts => {
                 if web_state.auth_required.is_none() {
@@ -672,6 +719,20 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
                         "Connected: mode={}, auth_required={}",
                         caps.mode, caps.auth_required
                     ));
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if caps.auth_required && web_state.token.is_none() {
+                        if let Some((username, password)) = web_state.cli_credentials.clone() {
+                            web_state.status_message =
+                                Some(format!("Logging in as '{username}'..."));
+                            web_fetch_login(
+                                &web_state.server_url,
+                                &username,
+                                &password,
+                                web_queue.events.clone(),
+                            );
+                            continue;
+                        }
+                    }
                     if let Ok(token) = maybe_auth_token(&web_state) {
                         web_fetch_artifacts(
                             &web_state.server_url,
@@ -684,12 +745,17 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
                     web_state.status_message = Some(format!("Capability check failed: {error}"));
                 }
             },
+            #[cfg(not(target_arch = "wasm32"))]
             WebApiEvent::Login(result) => match result {
                 Ok(login) => {
                     web_state.token = Some(login.token);
-                    web_state.logged_in_user = Some(login.user.username.clone());
                     web_state.status_message =
                         Some(format!("Logged in as {}", login.user.username));
+                    web_fetch_artifacts(
+                        &web_state.server_url,
+                        web_state.token.as_deref(),
+                        web_queue.events.clone(),
+                    );
                 }
                 Err(error) => {
                     web_state.status_message = Some(format!("Login failed: {error}"));

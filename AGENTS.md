@@ -32,6 +32,12 @@ cargo run --bin racing -- --standalone
 
 # Run the single-node backend (default bind: 127.0.0.1:8787)
 cargo run -p racehub
+
+# Build web artifacts into web-dist/
+./scripts/build_web.sh [--release]
+
+# Build + serve web app through racehub
+./scripts/serve_web.sh [--release]
 ```
 
 Cars are spawned from ELF artifacts fetched from `racehub` (or uploaded manually in-game). Local runtime bot compilation/discovery is intentionally removed from `racing`.
@@ -154,10 +160,14 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - `GET /api/v1/artifacts`
   - `POST /api/v1/artifacts`
   - `GET /api/v1/artifacts/{id}`
-- Uses bearer-token sessions stored in SQLite.
+- Uses session tokens stored in SQLite and accepts either:
+  - `Authorization: Bearer <token>` (VSCode extension / native clients)
+  - `racehub_session` cookie (browser/web game flow)
 - Supports auth modes via `RACEHUB_AUTH_MODE`:
   - `required` (normal server mode)
   - `disabled` (standalone mode, implicit local user)
+- `RACEHUB_COOKIE_SECURE` controls whether the session cookie is marked `Secure`.
+- `RACEHUB_STATIC_DIR` controls which static directory is served (default `web-dist`; empty disables static serving).
 - Backend scope is intentionally minimal: auth + artifact storage/list/download.
 
 ### `vscode-extension/` — Artifact Upload Connector
@@ -172,14 +182,15 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 ### `racing/` — The Game
 
 - **`main.rs`** — Bevy app setup, game state management (`SimState`), event-based car spawning, physics, free camera with follow-on-select, two AI systems
-- **`ui.rs`** — `RaceUiPlugin`: right-side panel with artifact selector, auth fields, refresh/upload artifact buttons, add/remove car buttons, start/pause/reset, per-car debug gizmo toggles, per-car follow camera button, and console output.
+- **`ui.rs`** — `RaceUiPlugin`: right-side panel with artifact selector, refresh/upload artifact buttons, add/remove car buttons, start/pause/reset, per-car debug gizmo toggles, per-car follow camera button, and console output.
 - **`devices.rs`** — `CarStateDevice`, `CarControlsDevice`, `SplineDevice`, `TrackRadarDevice`, and `CarRadarDevice` implementing `Device` (host-side counterparts to the bot's volatile pointers and their uptate systems for bevy logic)
 - **`track.rs`** — `TrackSpline` resource, spline construction, track/kerb mesh generation
 - **`track_format.rs`** — TOML-based track file format (`TrackFile`)
 - **`bin/editor.rs`** — Track editor tool
 - Web API integration in `main.rs`/`ui.rs` now supports:
   - capability checks against `racehub`
-  - login when required
+  - native CLI credential prompt (non-wasm) and login when required
+  - browser-cookie-based auth for wasm/web builds (no in-game login fields)
   - loading artifact lists
   - manual artifact upload from file chooser (native + web)
   - selecting remote artifacts as drivers (`DriverType::RemoteArtifact`) and downloading ELF via HTTP for spawning
@@ -230,7 +241,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 4. **Driver source is artifact-only** — Cars are spawned from artifacts served by `racehub`; local runtime bot compilation/discovery is intentionally removed from `racing`.
 
-5. **Instruction budget matters** — The `instructions_per_update` value (currently 5000) must be high enough for each bot loop iteration to make progress, but low enough to avoid burning host CPU. The bot now performs window search (50 samples), lookahead walking, and curvature detection each frame.
+5. **Instruction budget matters** — The `instructions_per_update` value (currently 10000) must be high enough for each bot loop iteration to make progress, but low enough to avoid burning host CPU.
 
 6. **Spline logic is bot-side** — The bot implements full autonomous navigation (window search, dynamic lookahead, spline walking, curvature-based braking) using the `SplineDevice` query interface. The engine only provides basic physics state; all pathfinding intelligence runs in emulated RISC-V code.
 
@@ -242,7 +253,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 ## Common Pitfalls
 
-- **Web artifact flow may require auth** — In server mode, token is required; in standalone mode auth is disabled.
+- **Web artifact flow may require auth** — In server mode: native uses bearer token after CLI login, web uses browser session cookie. In standalone mode auth is disabled.
 - **Embedded standalone startup race** — Initial capability fetch can fail if embedded `racehub` has not yet bound; retry from the UI.
 - **Device index vs slot address** — Device index 0 = address 0x100, index 1 = 0x200, etc. Off-by-one errors here will silently read zeros or fail.
 - **Mmu passes offsets, not absolute addresses** — If you implement a new device, your `load`/`store` will receive `addr & 0xFF`, not the full address.

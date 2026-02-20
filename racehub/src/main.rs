@@ -22,6 +22,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(mode) = std::env::var("RACEHUB_AUTH_MODE") {
         config.auth_mode = AuthMode::from_env(&mode);
     }
+    if let Ok(cookie_secure) = std::env::var("RACEHUB_COOKIE_SECURE") {
+        config.cookie_secure = matches!(cookie_secure.as_str(), "1" | "true" | "TRUE" | "True");
+    }
+    if let Ok(static_dir) = std::env::var("RACEHUB_STATIC_DIR") {
+        if static_dir.trim().is_empty() {
+            config.static_dir = None;
+        } else {
+            config.static_dir = Some(static_dir.into());
+        }
+    }
 
     run_server(config).await
 }

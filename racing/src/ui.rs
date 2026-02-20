@@ -9,13 +9,10 @@ pub struct RaceUiPlugin;
 
 impl Plugin for RaceUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<UiTextInputState>()
-            .add_systems(Startup, setup_ui)
+        app.add_systems(Startup, setup_ui)
             .add_systems(
                 Update,
                 (
-                    handle_focus_clicks,
-                    handle_text_input,
                     update_car_list_ui,
                     handle_add_car_button,
                     handle_driver_selector,
@@ -62,16 +59,6 @@ struct WebStatusText;
 #[derive(Component)]
 struct ArtifactsText;
 #[derive(Component)]
-struct UsernameFieldText;
-#[derive(Component)]
-struct PasswordFieldText;
-#[derive(Component)]
-struct UsernameFieldButton;
-#[derive(Component)]
-struct PasswordFieldButton;
-#[derive(Component)]
-struct LoginButton;
-#[derive(Component)]
 struct LoadArtifactsButton;
 #[derive(Component)]
 struct UploadArtifactButton;
@@ -85,17 +72,6 @@ struct FollowCarButton(Entity);
 struct CarListRow(#[allow(dead_code)] Entity);
 #[derive(Component)]
 struct ConsoleText;
-
-#[derive(Resource, Default)]
-struct UiTextInputState {
-    focused: Option<FocusedField>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FocusedField {
-    Username,
-    Password,
-}
 
 const PANEL_BG: Color = Color::srgba(0.08, 0.08, 0.12, 0.92);
 const BTN_BG: Color = Color::srgb(0.25, 0.25, 0.35);
@@ -199,41 +175,6 @@ fn setup_ui(mut commands: Commands) {
                     ..default()
                 })
                 .with_children(|web| {
-                    web.spawn((
-                        Button,
-                        UsernameFieldButton,
-                        button_style(),
-                        BackgroundColor(BTN_BG),
-                    ))
-                    .with_children(|btn| {
-                        btn.spawn((
-                            Text::new("Username: <click to edit>"),
-                            UsernameFieldText,
-                            text_font(13.0),
-                            TextColor(TEXT_COLOR),
-                        ));
-                    });
-
-                    web.spawn((
-                        Button,
-                        PasswordFieldButton,
-                        button_style(),
-                        BackgroundColor(BTN_BG),
-                    ))
-                    .with_children(|btn| {
-                        btn.spawn((
-                            Text::new("Password: <click to edit>"),
-                            PasswordFieldText,
-                            text_font(13.0),
-                            TextColor(TEXT_COLOR),
-                        ));
-                    });
-
-                    web.spawn((Button, LoginButton, button_style(), BackgroundColor(BTN_BG)))
-                        .with_children(|btn| {
-                            btn.spawn((Text::new("Login"), text_font(14.0), TextColor(TEXT_COLOR)));
-                        });
-
                     web.spawn((
                         Button,
                         LoadArtifactsButton,
@@ -394,80 +335,11 @@ fn available_driver_options(web_state: &WebPortalState) -> Vec<DriverType> {
         .collect()
 }
 
-fn handle_focus_clicks(
-    username_query: Query<&Interaction, (Changed<Interaction>, With<UsernameFieldButton>)>,
-    password_query: Query<&Interaction, (Changed<Interaction>, With<PasswordFieldButton>)>,
-    mut input_state: ResMut<UiTextInputState>,
-) {
-    for interaction in &username_query {
-        if *interaction == Interaction::Pressed {
-            input_state.focused = Some(FocusedField::Username);
-        }
-    }
-    for interaction in &password_query {
-        if *interaction == Interaction::Pressed {
-            input_state.focused = Some(FocusedField::Password);
-        }
-    }
-}
-
-fn handle_text_input(
-    mut keyboard_events: MessageReader<bevy::input::keyboard::KeyboardInput>,
-    mut input_state: ResMut<UiTextInputState>,
-    mut web_state: ResMut<WebPortalState>,
-) {
-    let Some(focused) = input_state.focused else {
-        return;
-    };
-
-    for event in keyboard_events.read() {
-        if event.state != bevy::input::ButtonState::Pressed {
-            continue;
-        }
-
-        match event.logical_key {
-            bevy::input::keyboard::Key::Escape => {
-                input_state.focused = None;
-            }
-            bevy::input::keyboard::Key::Backspace => match focused {
-                FocusedField::Username => {
-                    web_state.username_input.pop();
-                }
-                FocusedField::Password => {
-                    web_state.password_input.pop();
-                }
-            },
-            bevy::input::keyboard::Key::Enter => {
-                input_state.focused = None;
-            }
-            _ => {
-                if let Some(text) = &event.text {
-                    for ch in text.chars() {
-                        if ch.is_control() {
-                            continue;
-                        }
-                        match focused {
-                            FocusedField::Username => web_state.username_input.push(ch),
-                            FocusedField::Password => web_state.password_input.push(ch),
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn handle_web_buttons(
-    login_query: Query<&Interaction, (Changed<Interaction>, With<LoginButton>)>,
     load_artifacts_query: Query<&Interaction, (Changed<Interaction>, With<LoadArtifactsButton>)>,
     upload_artifact_query: Query<&Interaction, (Changed<Interaction>, With<UploadArtifactButton>)>,
     mut web_commands: MessageWriter<WebApiCommand>,
 ) {
-    for interaction in &login_query {
-        if *interaction == Interaction::Pressed {
-            web_commands.write(WebApiCommand::Login);
-        }
-    }
     for interaction in &load_artifacts_query {
         if *interaction == Interaction::Pressed {
             web_commands.write(WebApiCommand::LoadArtifacts);
@@ -482,54 +354,23 @@ fn handle_web_buttons(
 
 fn update_web_ui_text(
     web_state: Res<WebPortalState>,
-    input_state: Res<UiTextInputState>,
     mut texts: ParamSet<(
-        Query<&mut Text, With<UsernameFieldText>>,
-        Query<&mut Text, With<PasswordFieldText>>,
         Query<&mut Text, With<WebStatusText>>,
         Query<&mut Text, With<ArtifactsText>>,
     )>,
 ) {
-    if !web_state.is_changed() && !input_state.is_changed() {
+    if !web_state.is_changed() {
         return;
     }
 
-    let username_prefix = if input_state.focused == Some(FocusedField::Username) {
-        "Username*: "
-    } else {
-        "Username: "
-    };
-    let password_prefix = if input_state.focused == Some(FocusedField::Password) {
-        "Password*: "
-    } else {
-        "Password: "
-    };
-
     for mut text in &mut texts.p0() {
-        let value = if web_state.username_input.is_empty() {
-            "<click to edit>".to_string()
-        } else {
-            web_state.username_input.clone()
-        };
-        text.0 = format!("{username_prefix}{value}");
-    }
-    for mut text in &mut texts.p1() {
-        let masked = if web_state.password_input.is_empty() {
-            "<click to edit>".to_string()
-        } else {
-            "*".repeat(web_state.password_input.chars().count())
-        };
-        text.0 = format!("{password_prefix}{masked}");
-    }
-    for mut text in &mut texts.p2() {
-        let user = web_state.logged_in_user.as_deref().unwrap_or("anonymous");
         let status = web_state.status_message.as_deref().unwrap_or("idle");
         let auth = match web_state.auth_required {
             Some(true) => "auth=required",
             Some(false) => "auth=disabled",
             None => "auth=?",
         };
-        text.0 = format!("Web status ({user}, {auth}): {status}");
+        text.0 = format!("Web status ({auth}): {status}");
     }
 
     let artifact_summary = if web_state.artifacts.is_empty() {
@@ -543,7 +384,7 @@ fn update_web_ui_text(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    for mut text in &mut texts.p3() {
+    for mut text in &mut texts.p1() {
         text.0 = format!(
             "Artifacts ({}): {}",
             web_state.artifacts.len(),

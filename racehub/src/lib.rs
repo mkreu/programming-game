@@ -11,7 +11,7 @@ use argon2::{
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -28,6 +28,7 @@ use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
 const LOCAL_USER_ID: i64 = 1;
 const LOCAL_USERNAME: &str = "local";
+const COOKIE_NAME: &str = "racehub_session";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
@@ -62,6 +63,7 @@ pub struct ServerConfig {
     pub artifacts_dir: PathBuf,
     pub static_dir: Option<PathBuf>,
     pub auth_mode: AuthMode,
+    pub cookie_secure: bool,
 }
 
 impl Default for ServerConfig {
@@ -72,6 +74,7 @@ impl Default for ServerConfig {
             artifacts_dir: PathBuf::from("racehub_artifacts"),
             static_dir: Some(PathBuf::from("web-dist")),
             auth_mode: AuthMode::Required,
+            cookie_secure: false,
         }
     }
 }
@@ -81,6 +84,7 @@ struct AppState {
     db: Arc<Mutex<Connection>>,
     artifacts_dir: PathBuf,
     auth_mode: AuthMode,
+    cookie_secure: bool,
 }
 
 #[derive(Debug)]
@@ -141,6 +145,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), Box<dyn std::error::
         db: Arc::new(Mutex::new(conn)),
         artifacts_dir: config.artifacts_dir,
         auth_mode: config.auth_mode,
+        cookie_secure: config.cookie_secure,
     };
 
     let mut app = Router::new()
@@ -160,7 +165,7 @@ pub async fn run_server(config: ServerConfig) -> Result<(), Box<dyn std::error::
         .with_state(state);
 
     if let Some(dir) = &config.static_dir {
-        app = app.nest_service("/", ServeDir::new(dir));
+        app = app.fallback_service(ServeDir::new(dir));
     }
 
     let addr: SocketAddr = config.bind.parse()?;
@@ -220,7 +225,7 @@ async fn register(
 async fn login(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     if state.auth_mode == AuthMode::Disabled {
         return Err(ApiError::bad_request("auth is disabled in standalone mode"));
     }
@@ -253,24 +258,44 @@ async fn login(
     )
     .map_err(|e| ApiError::internal(format!("failed to create session: {e}")))?;
 
-    Ok(Json(LoginResponse {
-        token,
+    let login = LoginResponse {
+        token: token.clone(),
         user: UserInfo {
             id: user_id,
             username: username.to_string(),
         },
-    }))
+    };
+
+    let cookie = session_cookie(&token, state.cookie_secure);
+    Ok((StatusCode::OK, [(header::SET_COOKIE, cookie)], Json(login)).into_response())
 }
 
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     if state.auth_mode == AuthMode::Disabled {
-        return Ok(StatusCode::NO_CONTENT);
+        return Ok(StatusCode::NO_CONTENT.into_response());
     }
-    let token = bearer_token(&headers)?;
-    let db = state.db.lock().await;
-    db.execute("DELETE FROM sessions WHERE token = ?1", params![token])
-        .map_err(|e| ApiError::internal(format!("failed to logout: {e}")))?;
-    Ok(StatusCode::NO_CONTENT)
+
+    let mut removed = false;
+    if let Some(token) = bearer_token_opt(&headers) {
+        let db = state.db.lock().await;
+        db.execute("DELETE FROM sessions WHERE token = ?1", params![token])
+            .map_err(|e| ApiError::internal(format!("failed to logout bearer token: {e}")))?;
+        removed = true;
+    }
+
+    if let Some(token) = session_cookie_token(&headers) {
+        let db = state.db.lock().await;
+        db.execute("DELETE FROM sessions WHERE token = ?1", params![token])
+            .map_err(|e| ApiError::internal(format!("failed to logout cookie token: {e}")))?;
+        removed = true;
+    }
+
+    if !removed {
+        return Err(ApiError::unauthorized("missing auth token/session cookie"));
+    }
+
+    let clear_cookie = expired_session_cookie(state.cookie_secure);
+    Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, clear_cookie)]).into_response())
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<UserInfo>, ApiError> {
@@ -330,6 +355,7 @@ async fn upload_artifact(
     Json(payload): Json<UploadArtifactRequest>,
 ) -> Result<Json<UploadArtifactResponse>, ApiError> {
     let user = authenticate(&state, &headers).await?;
+
     if payload.name.trim().is_empty() {
         return Err(ApiError::bad_request("artifact name must not be empty"));
     }
@@ -405,7 +431,10 @@ async fn download_artifact(
 
     Ok((
         StatusCode::OK,
-        [("Content-Type", "application/octet-stream")],
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        )],
         bytes,
     )
         .into_response())
@@ -419,9 +448,17 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<UserInfo,
         });
     }
 
-    let token = bearer_token(headers)?;
-    let db = state.db.lock().await;
+    let token = if let Some(token) = bearer_token_opt(headers) {
+        token
+    } else if let Some(token) = session_cookie_token(headers) {
+        token
+    } else {
+        return Err(ApiError::unauthorized(
+            "missing Authorization bearer token or session cookie",
+        ));
+    };
 
+    let db = state.db.lock().await;
     let user: Option<UserInfo> = db
         .query_row(
             "SELECT u.id, u.username FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = ?1",
@@ -436,26 +473,46 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<UserInfo,
         .optional()
         .map_err(|e| ApiError::internal(format!("failed to lookup session: {e}")))?;
 
-    user.ok_or_else(|| ApiError::unauthorized("invalid or expired session token"))
+    user.ok_or_else(|| ApiError::unauthorized("invalid or expired session"))
 }
 
-fn bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
-    let value = headers
-        .get("Authorization")
-        .ok_or_else(|| ApiError::unauthorized("missing Authorization header"))?
-        .to_str()
-        .map_err(|_| ApiError::unauthorized("invalid Authorization header"))?;
-
-    let token = value
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| ApiError::unauthorized("Authorization must use Bearer token"))?
-        .trim();
-
+fn bearer_token_opt(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = value.strip_prefix("Bearer ")?.trim();
     if token.is_empty() {
-        return Err(ApiError::unauthorized("missing bearer token"));
+        None
+    } else {
+        Some(token.to_string())
     }
+}
 
-    Ok(token.to_string())
+fn session_cookie_token(headers: &HeaderMap) -> Option<String> {
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+    for pair in cookie_header.split(';') {
+        let mut parts = pair.trim().splitn(2, '=');
+        let key = parts.next()?.trim();
+        let value = parts.next()?.trim();
+        if key == COOKIE_NAME && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn session_cookie(token: &str, secure: bool) -> HeaderValue {
+    let secure_part = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{COOKIE_NAME}={token}; HttpOnly; Path=/; SameSite=Lax{secure_part}"
+    ))
+    .expect("valid session cookie")
+}
+
+fn expired_session_cookie(secure: bool) -> HeaderValue {
+    let secure_part = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0{secure_part}"
+    ))
+    .expect("valid expired cookie")
 }
 
 fn generate_token() -> String {

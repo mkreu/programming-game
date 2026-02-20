@@ -89,10 +89,6 @@ async function uploadArtifact(context: vscode.ExtensionContext): Promise<void> {
   const picked = await vscode.window.showOpenDialog({
     canSelectMany: false,
     openLabel: 'Select ELF Artifact',
-    filters: {
-      'ELF files': ['elf'],
-      'All files': ['*']
-    }
   });
 
   if (!picked || picked.length === 0) {

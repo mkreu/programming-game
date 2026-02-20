@@ -1,3 +1,4 @@
 **/target
 racehub.db
 racehub_artifacts/
+web-dist/
