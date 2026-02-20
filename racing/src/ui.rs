@@ -1,11 +1,10 @@
 use bevy::prelude::*;
 
 use crate::main_game::{
-    BotCompilePipeline, BotProjectBinaries, CarLabel, DebugGizmos, DriverType, FollowCar,
-    RaceManager, SimState, SpawnCarRequest, WebApiCommand, WebPortalState,
+    ArtifactFetchPipeline, CarLabel, DebugGizmos, DriverType, FollowCar, RaceManager, SimState,
+    SpawnCarRequest, WebApiCommand, WebPortalState,
 };
 
-/// Plugin that sets up all UI systems.
 pub struct RaceUiPlugin;
 
 impl Plugin for RaceUiPlugin {
@@ -22,7 +21,7 @@ impl Plugin for RaceUiPlugin {
                     handle_driver_selector,
                     handle_web_buttons,
                     update_web_ui_text,
-                    update_build_status,
+                    update_pipeline_status,
                     handle_remove_car_button,
                     handle_toggle_gizmos_button,
                 ),
@@ -40,80 +39,52 @@ impl Plugin for RaceUiPlugin {
     }
 }
 
-// ── Marker components for UI nodes ──────────────────────────────────────────
-
 #[derive(Component)]
 struct UiRoot;
-
 #[derive(Component)]
 struct CarListContainer;
-
 #[derive(Component)]
 struct ConsoleTextContainer;
-
 #[derive(Component)]
 struct AddCarButton;
-
 #[derive(Component)]
 struct StartButton;
-
 #[derive(Component)]
 struct ResetButton;
-
 #[derive(Component)]
 struct DriverSelectorButton;
-
 #[derive(Component)]
 struct DriverSelectorText;
-
 #[derive(Component)]
-struct BuildStatusText;
-
+struct PipelineStatusText;
 #[derive(Component)]
 struct WebStatusText;
-
-#[derive(Component)]
-struct ScriptsText;
-
 #[derive(Component)]
 struct ArtifactsText;
-
 #[derive(Component)]
 struct UsernameFieldText;
-
 #[derive(Component)]
 struct PasswordFieldText;
-
 #[derive(Component)]
 struct UsernameFieldButton;
-
 #[derive(Component)]
 struct PasswordFieldButton;
-
 #[derive(Component)]
 struct LoginButton;
-
-#[derive(Component)]
-struct LoadScriptsButton;
-
 #[derive(Component)]
 struct LoadArtifactsButton;
-
-/// Marks a remove button, storing the car entity it removes.
+#[derive(Component)]
+struct UploadArtifactButton;
 #[derive(Component)]
 struct RemoveCarButton(Entity);
-
-/// Marks a gizmo-toggle button, storing the car entity it toggles.
 #[derive(Component)]
 struct ToggleGizmosButton(Entity);
-
-/// Marks a follow-car button, storing the car entity to follow.
 #[derive(Component)]
 struct FollowCarButton(Entity);
-
-/// A single car list row, tied to a car entity.
 #[derive(Component)]
 struct CarListRow(#[allow(dead_code)] Entity);
+#[derive(Component)]
+struct ConsoleText;
 
 #[derive(Resource, Default)]
 struct UiTextInputState {
@@ -125,8 +96,6 @@ enum FocusedField {
     Username,
     Password,
 }
-
-// ── Colours & constants ─────────────────────────────────────────────────────
 
 const PANEL_BG: Color = Color::srgba(0.08, 0.08, 0.12, 0.92);
 const BTN_BG: Color = Color::srgb(0.25, 0.25, 0.35);
@@ -156,10 +125,7 @@ fn button_style() -> Node {
     }
 }
 
-// ── Setup ───────────────────────────────────────────────────────────────────
-
 fn setup_ui(mut commands: Commands) {
-    // Right-side panel
     commands
         .spawn((
             UiRoot,
@@ -168,25 +134,22 @@ fn setup_ui(mut commands: Commands) {
                 right: px(0.0),
                 top: px(0.0),
                 bottom: px(0.0),
-                width: px(320.0),
+                width: px(340.0),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(10.0)),
                 row_gap: px(8.0),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            // Don't let clicks through to the game world
             Pickable::default(),
         ))
         .with_children(|panel| {
-            // ── Title ──
             panel.spawn((
                 Text::new("Race Control"),
                 text_font(22.0),
                 TextColor(TEXT_COLOR),
             ));
 
-            // ── Driver selector row ──
             panel
                 .spawn(Node {
                     flex_direction: FlexDirection::Row,
@@ -200,7 +163,6 @@ fn setup_ui(mut commands: Commands) {
                         text_font(14.0),
                         TextColor(LABEL_COLOR),
                     ));
-                    // Selector button (cycles through driver types on click)
                     row.spawn((
                         Button,
                         DriverSelectorButton,
@@ -209,7 +171,7 @@ fn setup_ui(mut commands: Commands) {
                     ))
                     .with_children(|btn| {
                         btn.spawn((
-                            Text::new("<Invalid>"),
+                            Text::new("<No artifacts>"),
                             DriverSelectorText,
                             text_font(14.0),
                             TextColor(TEXT_COLOR),
@@ -218,14 +180,14 @@ fn setup_ui(mut commands: Commands) {
                 });
 
             panel.spawn((
-                Text::new("Bot build: idle"),
-                BuildStatusText,
+                Text::new("Artifact load: idle"),
+                PipelineStatusText,
                 text_font(12.0),
                 TextColor(LABEL_COLOR),
             ));
 
             panel.spawn((
-                Text::new("Web Repository"),
+                Text::new("RaceHub"),
                 text_font(16.0),
                 TextColor(LABEL_COLOR),
             ));
@@ -271,19 +233,7 @@ fn setup_ui(mut commands: Commands) {
                         .with_children(|btn| {
                             btn.spawn((Text::new("Login"), text_font(14.0), TextColor(TEXT_COLOR)));
                         });
-                    web.spawn((
-                        Button,
-                        LoadScriptsButton,
-                        button_style(),
-                        BackgroundColor(BTN_BG),
-                    ))
-                    .with_children(|btn| {
-                        btn.spawn((
-                            Text::new("Load Scripts"),
-                            text_font(14.0),
-                            TextColor(TEXT_COLOR),
-                        ));
-                    });
+
                     web.spawn((
                         Button,
                         LoadArtifactsButton,
@@ -292,7 +242,21 @@ fn setup_ui(mut commands: Commands) {
                     ))
                     .with_children(|btn| {
                         btn.spawn((
-                            Text::new("Load Artifacts"),
+                            Text::new("Refresh Artifacts"),
+                            text_font(14.0),
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+
+                    web.spawn((
+                        Button,
+                        UploadArtifactButton,
+                        button_style(),
+                        BackgroundColor(BTN_BG),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Upload Artifact"),
                             text_font(14.0),
                             TextColor(TEXT_COLOR),
                         ));
@@ -305,12 +269,6 @@ fn setup_ui(mut commands: Commands) {
                         TextColor(LABEL_COLOR),
                     ));
                     web.spawn((
-                        Text::new("Scripts: -"),
-                        ScriptsText,
-                        text_font(12.0),
-                        TextColor(LABEL_COLOR),
-                    ));
-                    web.spawn((
                         Text::new("Artifacts: -"),
                         ArtifactsText,
                         text_font(12.0),
@@ -318,7 +276,6 @@ fn setup_ui(mut commands: Commands) {
                     ));
                 });
 
-            // ── Add Car / Start / Reset row ──
             panel
                 .spawn(Node {
                     flex_direction: FlexDirection::Row,
@@ -326,7 +283,6 @@ fn setup_ui(mut commands: Commands) {
                     ..default()
                 })
                 .with_children(|row| {
-                    // Add Car
                     row.spawn((
                         Button,
                         AddCarButton,
@@ -340,7 +296,6 @@ fn setup_ui(mut commands: Commands) {
                             TextColor(TEXT_COLOR),
                         ));
                     });
-                    // Start
                     row.spawn((
                         Button,
                         StartButton,
@@ -350,7 +305,6 @@ fn setup_ui(mut commands: Commands) {
                     .with_children(|btn| {
                         btn.spawn((Text::new("Start"), text_font(14.0), TextColor(TEXT_COLOR)));
                     });
-                    // Reset
                     row.spawn((
                         Button,
                         ResetButton,
@@ -362,31 +316,27 @@ fn setup_ui(mut commands: Commands) {
                     });
                 });
 
-            // ── Section label: Cars ──
             panel.spawn((Text::new("Cars"), text_font(16.0), TextColor(LABEL_COLOR)));
 
-            // ── Scrollable car list ──
             panel
                 .spawn((
                     Node {
                         flex_direction: FlexDirection::Column,
                         row_gap: px(4.0),
                         overflow: Overflow::scroll_y(),
-                        max_height: px(240.0),
+                        max_height: px(220.0),
                         ..default()
                     },
                     CarListContainer,
                 ))
                 .with_children(|_| {});
 
-            // ── Section label: Console ──
             panel.spawn((
                 Text::new("Console"),
                 text_font(16.0),
                 TextColor(LABEL_COLOR),
             ));
 
-            // ── Console output (scrollable) ──
             panel.spawn((
                 Node {
                     flex_direction: FlexDirection::Column,
@@ -401,23 +351,21 @@ fn setup_ui(mut commands: Commands) {
         });
 }
 
-// ── Driver selector cycling ─────────────────────────────────────────────────
-
 fn handle_driver_selector(
     query: Query<&Interaction, (Changed<Interaction>, With<DriverSelectorButton>)>,
     mut text_query: Query<&mut Text, With<DriverSelectorText>>,
     mut manager: ResMut<RaceManager>,
-    bot_binaries: Res<BotProjectBinaries>,
     web_state: Res<WebPortalState>,
 ) {
-    let options = available_driver_options(&bot_binaries, &web_state);
+    let options = available_driver_options(&web_state);
     if options.is_empty() {
         for mut text in &mut text_query {
-            text.0 = "<No drivers>".to_string();
+            text.0 = "<No artifacts>".to_string();
         }
         manager.selected_driver = None;
         return;
     }
+
     for interaction in &query {
         if *interaction == Interaction::Pressed {
             let current_index = options
@@ -438,18 +386,12 @@ fn handle_driver_selector(
     }
 }
 
-fn available_driver_options(
-    bot_binaries: &BotProjectBinaries,
-    web_state: &WebPortalState,
-) -> Vec<DriverType> {
-    let mut options = vec![];
-    for binary in &bot_binaries.binaries {
-        options.push(DriverType::LocalBinary(binary.clone()));
-    }
-    for artifact in &web_state.artifacts {
-        options.push(DriverType::RemoteArtifact { id: artifact.id });
-    }
-    options
+fn available_driver_options(web_state: &WebPortalState) -> Vec<DriverType> {
+    web_state
+        .artifacts
+        .iter()
+        .map(|artifact| DriverType::RemoteArtifact { id: artifact.id })
+        .collect()
 }
 
 fn handle_focus_clicks(
@@ -517,8 +459,8 @@ fn handle_text_input(
 
 fn handle_web_buttons(
     login_query: Query<&Interaction, (Changed<Interaction>, With<LoginButton>)>,
-    load_scripts_query: Query<&Interaction, (Changed<Interaction>, With<LoadScriptsButton>)>,
     load_artifacts_query: Query<&Interaction, (Changed<Interaction>, With<LoadArtifactsButton>)>,
+    upload_artifact_query: Query<&Interaction, (Changed<Interaction>, With<UploadArtifactButton>)>,
     mut web_commands: MessageWriter<WebApiCommand>,
 ) {
     for interaction in &login_query {
@@ -526,14 +468,14 @@ fn handle_web_buttons(
             web_commands.write(WebApiCommand::Login);
         }
     }
-    for interaction in &load_scripts_query {
-        if *interaction == Interaction::Pressed {
-            web_commands.write(WebApiCommand::LoadScripts);
-        }
-    }
     for interaction in &load_artifacts_query {
         if *interaction == Interaction::Pressed {
             web_commands.write(WebApiCommand::LoadArtifacts);
+        }
+    }
+    for interaction in &upload_artifact_query {
+        if *interaction == Interaction::Pressed {
+            web_commands.write(WebApiCommand::UploadArtifact);
         }
     }
 }
@@ -545,7 +487,6 @@ fn update_web_ui_text(
         Query<&mut Text, With<UsernameFieldText>>,
         Query<&mut Text, With<PasswordFieldText>>,
         Query<&mut Text, With<WebStatusText>>,
-        Query<&mut Text, With<ScriptsText>>,
         Query<&mut Text, With<ArtifactsText>>,
     )>,
 ) {
@@ -583,22 +524,12 @@ fn update_web_ui_text(
     for mut text in &mut texts.p2() {
         let user = web_state.logged_in_user.as_deref().unwrap_or("anonymous");
         let status = web_state.status_message.as_deref().unwrap_or("idle");
-        text.0 = format!("Web status ({user}): {status}");
-    }
-
-    let script_summary = if web_state.scripts.is_empty() {
-        "-".to_string()
-    } else {
-        web_state
-            .scripts
-            .iter()
-            .take(3)
-            .map(|s| format!("{}#{}", s.name, s.id))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    for mut text in &mut texts.p3() {
-        text.0 = format!("Scripts ({}): {}", web_state.scripts.len(), script_summary);
+        let auth = match web_state.auth_required {
+            Some(true) => "auth=required",
+            Some(false) => "auth=disabled",
+            None => "auth=?",
+        };
+        text.0 = format!("Web status ({user}, {auth}): {status}");
     }
 
     let artifact_summary = if web_state.artifacts.is_empty() {
@@ -608,11 +539,11 @@ fn update_web_ui_text(
             .artifacts
             .iter()
             .take(4)
-            .map(|a| format!("#{}", a.id))
+            .map(|a| format!("{}(#{} )", a.name, a.id))
             .collect::<Vec<_>>()
             .join(", ")
     };
-    for mut text in &mut texts.p4() {
+    for mut text in &mut texts.p3() {
         text.0 = format!(
             "Artifacts ({}): {}",
             web_state.artifacts.len(),
@@ -621,15 +552,12 @@ fn update_web_ui_text(
     }
 }
 
-// ── Add car button ──────────────────────────────────────────────────────────
-
 fn handle_add_car_button(
     query: Query<&Interaction, (Changed<Interaction>, With<AddCarButton>)>,
     mut spawn_events: MessageWriter<SpawnCarRequest>,
     manager: Res<RaceManager>,
     state: Res<State<SimState>>,
 ) {
-    // Only allow adding cars before the race starts
     if *state.get() != SimState::PreRace {
         return;
     }
@@ -644,29 +572,23 @@ fn handle_add_car_button(
     }
 }
 
-fn update_build_status(
-    pipeline: Res<BotCompilePipeline>,
-    bot_binaries: Res<BotProjectBinaries>,
-    mut text_query: Query<&mut Text, With<BuildStatusText>>,
+fn update_pipeline_status(
+    pipeline: Res<ArtifactFetchPipeline>,
+    mut text_query: Query<&mut Text, With<PipelineStatusText>>,
 ) {
-    if !pipeline.is_changed() && !bot_binaries.is_changed() {
+    if !pipeline.is_changed() {
         return;
     }
 
-    let message = if let Some(error) = &bot_binaries.load_error {
-        format!("Bot discovery failed: {error}")
-    } else if let Some(status) = &pipeline.status_message {
-        status.clone()
-    } else {
-        "Bot build: idle".to_string()
-    };
+    let message = pipeline
+        .status_message
+        .clone()
+        .unwrap_or_else(|| "Artifact load: idle".to_string());
 
     for mut text in &mut text_query {
         text.0 = message.clone();
     }
 }
-
-// ── Start button ────────────────────────────────────────────────────────────
 
 fn handle_start_button(
     query: Query<&Interaction, (Changed<Interaction>, With<StartButton>)>,
@@ -711,8 +633,6 @@ fn update_start_button_text(
     }
 }
 
-// ── Reset button ────────────────────────────────────────────────────────────
-
 fn handle_reset_button(
     query: Query<&Interaction, (Changed<Interaction>, With<ResetButton>)>,
     mut next_state: ResMut<NextState<SimState>>,
@@ -722,7 +642,6 @@ fn handle_reset_button(
 ) {
     for interaction in &query {
         if *interaction == Interaction::Pressed {
-            // Despawn all cars
             for entity in &car_query {
                 commands.entity(entity).despawn();
             }
@@ -732,8 +651,6 @@ fn handle_reset_button(
         }
     }
 }
-
-// ── Remove car button ───────────────────────────────────────────────────────
 
 fn handle_remove_car_button(
     query: Query<(&Interaction, &RemoveCarButton), Changed<Interaction>>,
@@ -753,8 +670,6 @@ fn handle_remove_car_button(
     }
 }
 
-// ── Toggle gizmos button ────────────────────────────────────────────────────
-
 fn handle_toggle_gizmos_button(
     query: Query<(&Interaction, &ToggleGizmosButton), Changed<Interaction>>,
     mut commands: Commands,
@@ -772,8 +687,6 @@ fn handle_toggle_gizmos_button(
     }
 }
 
-// ── Follow car button ───────────────────────────────────────────────────────
-
 fn handle_follow_car_button(
     query: Query<(&Interaction, &FollowCarButton), Changed<Interaction>>,
     mut follow: ResMut<FollowCar>,
@@ -781,7 +694,6 @@ fn handle_follow_car_button(
     for (interaction, follow_btn) in &query {
         if *interaction == Interaction::Pressed {
             if follow.target == Some(follow_btn.0) {
-                // Toggle off if clicking same car
                 follow.target = None;
             } else {
                 follow.target = Some(follow_btn.0);
@@ -789,8 +701,6 @@ fn handle_follow_car_button(
         }
     }
 }
-
-// ── Rebuild car list UI whenever RaceManager changes ────────────────────────
 
 fn update_car_list_ui(
     manager: Res<RaceManager>,
@@ -801,10 +711,6 @@ fn update_car_list_ui(
     follow: Res<FollowCar>,
 ) {
     if !manager.is_changed() && !follow.is_changed() {
-        // Check if gizmo state may have changed — but we also need to rebuild
-        // We'll rely on the gizmo toggle triggering a manager change or just rebuild.
-        // For simplicity, skip if manager hasn't changed.
-        // The gizmo toggle button changes ECS which triggers change detection next frame.
         return;
     }
 
@@ -812,17 +718,14 @@ fn update_car_list_ui(
         return;
     };
 
-    // Remove old rows
     for (row_entity, _) in &existing_rows {
         commands.entity(row_entity).despawn();
     }
 
-    // Build new rows
     for entry in &manager.cars {
         let entity = entry.entity;
         let has_gizmos = gizmo_query.get(entity).is_ok();
         let is_followed = follow.target == Some(entity);
-
         let driver_label = entry.driver.label();
 
         commands.entity(container).with_children(|list| {
@@ -838,7 +741,6 @@ fn update_car_list_ui(
                 BackgroundColor(Color::srgba(0.15, 0.15, 0.2, 0.8)),
             ))
             .with_children(|row| {
-                // Car name + driver type
                 row.spawn((
                     Text::new(format!("{} [{}]", entry.name, driver_label)),
                     text_font(13.0),
@@ -849,7 +751,6 @@ fn update_car_list_ui(
                     },
                 ));
 
-                // Follow button
                 let follow_bg = if is_followed {
                     Color::srgb(0.2, 0.5, 0.7)
                 } else {
@@ -868,7 +769,6 @@ fn update_car_list_ui(
                     btn.spawn((Text::new("👁"), text_font(12.0), TextColor(TEXT_COLOR)));
                 });
 
-                // Gizmos toggle
                 let gizmo_bg = if has_gizmos {
                     Color::srgb(0.2, 0.6, 0.3)
                 } else {
@@ -887,7 +787,6 @@ fn update_car_list_ui(
                     btn.spawn((Text::new("🔧"), text_font(12.0), TextColor(TEXT_COLOR)));
                 });
 
-                // Remove button
                 row.spawn((
                     Button,
                     RemoveCarButton(entity),
@@ -905,8 +804,6 @@ fn update_car_list_ui(
     }
 }
 
-// ── Console output ──────────────────────────────────────────────────────────
-
 fn update_console_output(
     mut manager: ResMut<RaceManager>,
     mut cpu_query: Query<(&CarLabel, &mut emulator::cpu::LogDevice)>,
@@ -914,15 +811,12 @@ fn update_console_output(
     mut commands: Commands,
     existing_texts: Query<Entity, (With<Text>, With<ConsoleText>)>,
 ) {
-    // Drain output from all emulator cars
     let mut any_new = false;
     for (label, mut log_dev) in &mut cpu_query {
         let output = log_dev.drain_output();
         if !output.is_empty() {
-            // Find the car entry and append
             if let Some(entry) = manager.cars.iter_mut().find(|c| c.name == label.name) {
                 entry.console_output.push_str(&output);
-                // Cap at a reasonable size
                 if entry.console_output.len() > 8192 {
                     let start = entry.console_output.len() - 4096;
                     let trimmed = entry.console_output[start..].to_string();
@@ -941,25 +835,21 @@ fn update_console_output(
         return;
     };
 
-    // Clear old text nodes
     for entity in &existing_texts {
         commands.entity(entity).despawn();
     }
 
-    // Rebuild console content
     commands.entity(container).with_children(|console| {
         for entry in &manager.cars {
             if entry.console_output.is_empty() {
                 continue;
             }
-            // Car name header
             console.spawn((
                 Text::new(format!("── {} ──", entry.name)),
                 text_font(12.0),
                 TextColor(Color::srgb(0.5, 0.8, 1.0)),
                 ConsoleText,
             ));
-            // Take last ~40 lines
             let lines: Vec<&str> = entry.console_output.lines().collect();
             let start = lines.len().saturating_sub(40);
             let display = lines[start..].join("\n");
@@ -972,6 +862,3 @@ fn update_console_output(
         }
     });
 }
-
-#[derive(Component)]
-struct ConsoleText;

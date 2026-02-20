@@ -7,12 +7,12 @@ A racing game prototype where cars can be driven by AI implemented as **RISC-V p
 ## Workspace Structure
 
 ```
-Cargo.toml            # Workspace root — members: racing, emulator, race-protocol, racehub, race-connector. Excludes bot.
+Cargo.toml            # Workspace root — members: racing, emulator, race-protocol, racehub. Excludes bot.
 ├── racing/           # Bevy game — physics, rendering, car spawning, AI systems
 ├── emulator/         # Use-case-agnostic RISC-V emulator (RV32IMAFC + RV32C/Zcf) with Bevy integration
-├── race-protocol/    # Shared API DTOs used by backend/client/connector
-├── racehub/          # Single-binary web backend (Axum + SQLite + artifact store)
-├── race-connector/   # Local CLI/daemon scaffold for login/sync/upload
+├── race-protocol/    # Shared API DTOs used by backend/client/game/extension
+├── racehub/          # Minimal backend (auth + artifact storage/list/download)
+├── vscode-extension/ # VSCode extension for artifact upload (not a Cargo crate)
 └── bot/              # no_std RISC-V programs compiled to bare-metal ELF (separate target)
 ```
 
@@ -27,14 +27,14 @@ Cargo.toml            # Workspace root — members: racing, emulator, race-proto
 cargo run --bin racing [-- path/to/track.toml]
 # Default track: racing/assets/track1.toml
 
+# Run racing in standalone mode (embedded racehub, auth disabled)
+cargo run --bin racing -- --standalone
+
 # Run the single-node backend (default bind: 127.0.0.1:8787)
 cargo run -p racehub
-
-# Use connector CLI
-cargo run -p race-connector -- --help
 ```
 
-On native builds, bot binaries are discovered at runtime via `cargo metadata` in `bot/` and compiled on demand when adding a bot-driven car. On web-compatible builds, local compile is disabled and bot cars are loaded from remote artifact IDs fetched from `racehub`.
+Cars are spawned from ELF artifacts fetched from `racehub` (or uploaded manually in-game). Local runtime bot compilation/discovery is intentionally removed from `racing`.
 
 ## Crate Details
 
@@ -138,51 +138,50 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 ### `race-protocol/` — Shared API Types
 
-- Shared request/response DTOs for backend/client/connector.
-- Defines v1 auth, scripts, script versions, artifact upload, and race-record payloads.
+- Shared request/response DTOs for backend/client/game/extension.
+- Defines minimal v1 payloads for auth, capabilities, artifact metadata, and artifact upload.
 - Keep this crate transport-agnostic and serde-only.
 
 ### `racehub/` — Single-Executable Backend
 
 - One Axum HTTP process with SQLite (`RACEHUB_DB_PATH`, default `racehub.db`) and filesystem artifact store (`RACEHUB_ARTIFACTS_DIR`, default `racehub_artifacts/`).
 - API endpoints:
+  - `GET /api/v1/capabilities`
   - `POST /api/v1/auth/register`
   - `POST /api/v1/auth/login`
   - `POST /api/v1/auth/logout`
   - `GET /api/v1/me`
-  - `GET/POST /api/v1/scripts`
-  - `POST /api/v1/scripts/{id}/versions`
   - `GET /api/v1/artifacts`
-  - `POST /api/v1/artifacts/upload`
+  - `POST /api/v1/artifacts`
   - `GET /api/v1/artifacts/{id}`
-  - `POST/GET /api/v1/race-records`
-  - `GET /api/v1/race-records/{id}`
 - Uses bearer-token sessions stored in SQLite.
-- In v1 this backend stores and serves data only; it does not run race simulation.
+- Supports auth modes via `RACEHUB_AUTH_MODE`:
+  - `required` (normal server mode)
+  - `disabled` (standalone mode, implicit local user)
+- Backend scope is intentionally minimal: auth + artifact storage/list/download.
 
-### `race-connector/` — Local Connector CLI (Initial)
+### `vscode-extension/` — Artifact Upload Connector
 
-- CLI scaffold currently supports:
-  - registration/login
-  - listing/creating scripts
-  - creating script versions
-  - uploading ELF artifacts
-  - local `cargo build` of bot binaries followed by upload (`build-and-upload`)
-- Config/token file: `~/.config/programming-game/connector.toml`.
-- Intended workflow is local IDE + local build + artifact upload.
+- TypeScript VSCode extension.
+- Commands:
+  - `RaceHub: Configure Server URL`
+  - `RaceHub: Login`
+  - `RaceHub: Upload Artifact File`
+- Detects server capabilities and skips auth flow automatically when `auth_required=false`.
 
 ### `racing/` — The Game
 
 - **`main.rs`** — Bevy app setup, game state management (`SimState`), event-based car spawning, physics, free camera with follow-on-select, two AI systems
-- **`ui.rs`** — `RaceUiPlugin`: right-side panel with driver type selector, add/remove car buttons, start/pause/reset, per-car debug gizmo toggles, per-car follow camera button, scrollable console output (drains `LogDevice` buffers)
-- **`bot_runtime.rs`** — Native-only runtime bot integration helpers: discovers available `bot` binaries via `cargo metadata`, compiles selected binaries (`cargo build --release --bin ... --target riscv32imafc-unknown-none-elf`), and loads produced ELF bytes.
+- **`ui.rs`** — `RaceUiPlugin`: right-side panel with artifact selector, auth fields, refresh/upload artifact buttons, add/remove car buttons, start/pause/reset, per-car debug gizmo toggles, per-car follow camera button, and console output.
 - **`devices.rs`** — `CarStateDevice`, `CarControlsDevice`, `SplineDevice`, `TrackRadarDevice`, and `CarRadarDevice` implementing `Device` (host-side counterparts to the bot's volatile pointers and their uptate systems for bevy logic)
 - **`track.rs`** — `TrackSpline` resource, spline construction, track/kerb mesh generation
 - **`track_format.rs`** — TOML-based track file format (`TrackFile`)
 - **`bin/editor.rs`** — Track editor tool
 - Web API integration in `main.rs`/`ui.rs` now supports:
-  - login against `racehub`
-  - loading scripts and artifact lists
+  - capability checks against `racehub`
+  - login when required
+  - loading artifact lists
+  - manual artifact upload from file chooser (native + web)
   - selecting remote artifacts as drivers (`DriverType::RemoteArtifact`) and downloading ELF via HTTP for spawning
 
 **Key components:**
@@ -229,7 +228,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 3. **Device addressing** — The `Mmu` strips the high bits and passes offset-relative addresses (`addr & 0xFF`) to devices. Devices don't need to know their absolute slot address.
 
-4. **Driver source is target-dependent** — Native builds compile selected local bot binaries on demand. Web-compatible builds load bot ELF from remote artifact IDs via `racehub`.
+4. **Driver source is artifact-only** — Cars are spawned from artifacts served by `racehub`; local runtime bot compilation/discovery is intentionally removed from `racing`.
 
 5. **Instruction budget matters** — The `instructions_per_update` value (currently 5000) must be high enough for each bot loop iteration to make progress, but low enough to avoid burning host CPU. The bot now performs window search (50 samples), lookahead walking, and curvature detection each frame.
 
@@ -239,12 +238,12 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 8. **Stack/DRAM alignment invariants** — DRAM allocation is rounded to 16-byte alignment with explicit stack headroom, and `sp` is set to a 16-byte aligned top-of-memory minus 16. Keep this when changing loader/builder code.
 
-9. **Pending bot builds are state-gated** — If a bot compile finishes after leaving `PreRace`, the result is discarded and no car is spawned.
+9. **Pending artifact downloads are state-gated** — If an artifact download finishes after leaving `PreRace`, the result is discarded and no car is spawned.
 
 ## Common Pitfalls
 
-- **Compile latency for bot cars** — Adding a bot-driven car now triggers a build. Failures are surfaced in the UI status line and the car is not spawned on failure.
-- **Web artifact flow requires auth** — Remote artifact drivers require a successful login token; otherwise artifact download and car spawn will fail.
+- **Web artifact flow may require auth** — In server mode, token is required; in standalone mode auth is disabled.
+- **Embedded standalone startup race** — Initial capability fetch can fail if embedded `racehub` has not yet bound; retry from the UI.
 - **Device index vs slot address** — Device index 0 = address 0x100, index 1 = 0x200, etc. Off-by-one errors here will silently read zeros or fail.
 - **Mmu passes offsets, not absolute addresses** — If you implement a new device, your `load`/`store` will receive `addr & 0xFF`, not the full address.
 - **`instructions_per_update` tuning** — Too low and the bot can't complete a loop iteration per tick. Too high and it burns CPU time.

@@ -1,14 +1,13 @@
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::thread;
 use std::{
     collections::HashMap,
     f32::consts::PI,
     sync::{Arc, Mutex},
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 
 use avian2d::prelude::{forces::ForcesItem, *};
+use base64::Engine;
 use bevy::{
     color::palettes::css::{GREEN, RED, WHITE, YELLOW},
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
@@ -17,11 +16,14 @@ use bevy::{
 };
 use emulator::bevy::{CpuComponent, cpu_system};
 use emulator::cpu::LogDevice;
-use race_protocol::{ArtifactSummary, LoginRequest, LoginResponse, ScriptSummary};
+use race_protocol::{
+    ArtifactSummary, LoginRequest, LoginResponse, ServerCapabilities, UploadArtifactRequest,
+    UploadArtifactResponse,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use racehub::{AuthMode, ServerConfig};
 
 use racing::Car;
-#[cfg(not(target_arch = "wasm32"))]
-use racing::bot_runtime;
 use racing::devices::{self, TrackRadarBorders};
 use racing::devices::{
     CarControlsDevice, CarRadarDevice, CarStateDevice, SplineDevice, TrackRadarDevice,
@@ -57,9 +59,10 @@ mod main_game {
 
     #[derive(Message)]
     pub enum WebApiCommand {
+        RefreshCapabilities,
         Login,
-        LoadScripts,
         LoadArtifacts,
+        UploadArtifact,
     }
 
     // ── Resources ───────────────────────────────────────────────────────
@@ -90,30 +93,15 @@ mod main_game {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum DriverType {
-        LocalBinary(String),
         RemoteArtifact { id: i64 },
     }
 
     impl DriverType {
         pub fn label(&self) -> String {
             match self {
-                DriverType::LocalBinary(binary) => format!("Bot: {binary}"),
                 DriverType::RemoteArtifact { id } => format!("Artifact: #{id}"),
             }
         }
-    }
-
-    #[derive(Resource, Default)]
-    pub struct BotProjectBinaries {
-        pub binaries: Vec<String>,
-        pub load_error: Option<String>,
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[derive(Clone)]
-    pub struct CompileRequest {
-        pub id: u64,
-        pub binary: String,
     }
 
     pub struct CompileResult {
@@ -123,11 +111,7 @@ mod main_game {
     }
 
     #[derive(Resource)]
-    pub struct BotCompilePipeline {
-        #[cfg(not(target_arch = "wasm32"))]
-        pub request_tx: mpsc::Sender<CompileRequest>,
-        #[cfg(not(target_arch = "wasm32"))]
-        pub result_rx: Mutex<mpsc::Receiver<CompileResult>>,
+    pub struct ArtifactFetchPipeline {
         pub async_results: Arc<Mutex<Vec<CompileResult>>>,
         pub pending: HashMap<u64, DriverType>,
         pub next_request_id: u64,
@@ -141,9 +125,10 @@ mod main_game {
 
     #[derive(Debug, Clone)]
     pub enum WebApiEvent {
+        Capabilities(Result<ServerCapabilities, String>),
         Login(Result<LoginResponse, String>),
-        Scripts(Result<Vec<ScriptSummary>, String>),
         Artifacts(Result<Vec<ArtifactSummary>, String>),
+        UploadResult(Result<UploadArtifactResponse, String>),
     }
 
     #[derive(Resource, Clone)]
@@ -162,11 +147,12 @@ mod main_game {
     #[derive(Resource)]
     pub struct WebPortalState {
         pub server_url: String,
+        pub standalone_mode: bool,
+        pub auth_required: Option<bool>,
         pub username_input: String,
         pub password_input: String,
         pub logged_in_user: Option<String>,
         pub token: Option<String>,
-        pub scripts: Vec<ScriptSummary>,
         pub artifacts: Vec<ArtifactSummary>,
         pub status_message: Option<String>,
     }
@@ -176,11 +162,12 @@ mod main_game {
             Self {
                 server_url: std::env::var("RACEHUB_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string()),
+                standalone_mode: false,
+                auth_required: None,
                 username_input: String::new(),
                 password_input: String::new(),
                 logged_in_user: None,
                 token: None,
-                scripts: Vec::new(),
                 artifacts: Vec::new(),
                 status_message: None,
             }
@@ -208,12 +195,40 @@ mod main_game {
 }
 
 fn main() {
-    let track_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "racing/assets/track1.toml".to_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut standalone_mode = false;
+    let mut track_path = "racing/assets/track1.toml".to_string();
+    for arg in std::env::args().skip(1) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if arg == "--standalone" {
+            standalone_mode = true;
+        } else {
+            track_path = arg;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            track_path = arg;
+        }
+    }
 
-    let bot_binaries = load_bot_project_binaries();
-    let compile_pipeline = create_compile_pipeline();
+    #[cfg(not(target_arch = "wasm32"))]
+    let standalone_url = if standalone_mode {
+        let bind = std::env::var("RACEHUB_STANDALONE_BIND")
+            .unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+        spawn_embedded_racehub(bind.clone());
+        Some(format!("http://{bind}"))
+    } else {
+        None
+    };
+    #[cfg(target_arch = "wasm32")]
+    let standalone_url: Option<String> = None;
+
+    let mut web_state = WebPortalState::default();
+    if let Some(url) = standalone_url {
+        web_state.server_url = url;
+        web_state.standalone_mode = true;
+        web_state.status_message = Some("Standalone mode: auth disabled".to_string());
+    }
 
     App::new()
         .add_plugins((
@@ -230,13 +245,19 @@ fn main() {
             std::time::Duration::from_secs_f32(1.0 / 200.0),
         ))
         .insert_resource(TrackPath(track_path))
-        .insert_resource(bot_binaries)
-        .insert_resource(compile_pipeline)
-        .insert_resource(WebPortalState::default())
+        .insert_resource(create_artifact_fetch_pipeline())
+        .insert_resource(web_state)
         .insert_resource(WebApiQueue::default())
         .insert_resource(RaceManager::default())
         .insert_resource(FollowCar::default())
-        .add_systems(Startup, (setup_track, setup.after(setup_track)))
+        .add_systems(
+            Startup,
+            (
+                setup_track,
+                setup.after(setup_track),
+                trigger_initial_capability_check,
+            ),
+        )
         .add_systems(Startup, set_default_zoom.after(setup))
         // Pause/unpause avian2d physics based on SimState
         .add_systems(Startup, pause_physics)
@@ -250,7 +271,7 @@ fn main() {
                 handle_web_api_commands,
                 process_web_api_events,
                 handle_spawn_car_event,
-                process_compiled_bot_results,
+                process_artifact_fetch_results,
             ),
         )
         // Keyboard driving: always active (only affects non-AI, non-emulator cars)
@@ -286,78 +307,51 @@ struct TrackPath(String);
 const WHEEL_BASE: f32 = 1.18;
 const WHEEL_TRACK: f32 = 0.95;
 
-fn load_bot_project_binaries() -> BotProjectBinaries {
-    #[cfg(target_arch = "wasm32")]
-    {
-        return BotProjectBinaries {
-            binaries: Vec::new(),
-            load_error: Some("Local bot discovery is unavailable in web builds".to_string()),
-        };
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    match bot_runtime::discover_bot_binaries() {
-        Ok(binaries) => BotProjectBinaries {
-            binaries,
-            load_error: None,
-        },
-        Err(error) => BotProjectBinaries {
-            binaries: Vec::new(),
-            load_error: Some(error),
-        },
+fn create_artifact_fetch_pipeline() -> ArtifactFetchPipeline {
+    ArtifactFetchPipeline {
+        async_results: Arc::new(Mutex::new(Vec::<CompileResult>::new())),
+        pending: HashMap::new(),
+        next_request_id: 1,
+        status_message: None,
     }
 }
 
-fn create_compile_pipeline() -> BotCompilePipeline {
-    let async_results = Arc::new(Mutex::new(Vec::<CompileResult>::new()));
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_embedded_racehub(bind: String) {
+    let mut config = ServerConfig::default();
+    config.bind = bind;
+    config.auth_mode = AuthMode::Disabled;
+    config.db_path = PathBuf::from(
+        std::env::var("RACEHUB_DB_PATH").unwrap_or_else(|_| "racehub.db".to_string()),
+    );
+    config.artifacts_dir = PathBuf::from(
+        std::env::var("RACEHUB_ARTIFACTS_DIR").unwrap_or_else(|_| "racehub_artifacts".to_string()),
+    );
+    config.static_dir = None;
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        return BotCompilePipeline {
-            async_results,
-            pending: HashMap::new(),
-            next_request_id: 1,
-            status_message: None,
-        };
-    }
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new()
+            .expect("failed to create tokio runtime for embedded racehub");
+        runtime
+            .block_on(racehub::run_server(config))
+            .expect("embedded racehub crashed");
+    });
+}
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let (request_tx, request_rx) = mpsc::channel::<CompileRequest>();
-        let (result_tx, result_rx) = mpsc::channel::<CompileResult>();
-        let bot_dir = bot_runtime::bot_project_dir();
-
-        thread::spawn(move || {
-            while let Ok(request) = request_rx.recv() {
-                let result =
-                    bot_runtime::compile_bot_binary_and_read_elf(&bot_dir, &request.binary);
-                let _ = result_tx.send(CompileResult {
-                    id: request.id,
-                    binary: request.binary,
-                    result,
-                });
-            }
-        });
-
-        BotCompilePipeline {
-            request_tx,
-            result_rx: Mutex::new(result_rx),
-            async_results,
-            pending: HashMap::new(),
-            next_request_id: 1,
-            status_message: None,
-        }
-    }
+fn trigger_initial_capability_check(mut cmds: MessageWriter<WebApiCommand>) {
+    cmds.write(WebApiCommand::RefreshCapabilities);
 }
 
 fn web_api_url(base: &str, path: &str) -> String {
     format!("{}{}", base.trim_end_matches('/'), path)
 }
 
-fn web_request_with_auth(url: String, token: &str) -> ehttp::Request {
+fn web_request_with_auth(url: String, token: Option<&str>) -> ehttp::Request {
     let mut req = ehttp::Request::get(url);
-    req.headers
-        .insert("Authorization", format!("Bearer {token}"));
+    if let Some(token) = token {
+        req.headers
+            .insert("Authorization", format!("Bearer {token}"));
+    }
     req
 }
 
@@ -409,23 +403,23 @@ fn web_fetch_login(
     });
 }
 
-fn web_fetch_scripts(server_url: &str, token: &str, queue: Arc<Mutex<Vec<WebApiEvent>>>) {
-    let url = web_api_url(server_url, "/api/v1/scripts");
-    let request = web_request_with_auth(url, token);
+fn web_fetch_capabilities(server_url: &str, queue: Arc<Mutex<Vec<WebApiEvent>>>) {
+    let url = web_api_url(server_url, "/api/v1/capabilities");
+    let request = ehttp::Request::get(url);
     ehttp::fetch(request, move |result| {
         let event = match result {
-            Ok(resp) if resp.ok => WebApiEvent::Scripts(
-                resp.json::<Vec<ScriptSummary>>()
-                    .map_err(|err| format!("invalid scripts response: {err}")),
+            Ok(resp) if resp.ok => WebApiEvent::Capabilities(
+                resp.json::<ServerCapabilities>()
+                    .map_err(|err| format!("invalid capabilities response: {err}")),
             ),
-            Ok(resp) => WebApiEvent::Scripts(Err(response_error(&resp))),
-            Err(err) => WebApiEvent::Scripts(Err(format!("network error: {err}"))),
+            Ok(resp) => WebApiEvent::Capabilities(Err(response_error(&resp))),
+            Err(err) => WebApiEvent::Capabilities(Err(format!("network error: {err}"))),
         };
         push_web_event(&queue, event);
     });
 }
 
-fn web_fetch_artifacts(server_url: &str, token: &str, queue: Arc<Mutex<Vec<WebApiEvent>>>) {
+fn web_fetch_artifacts(server_url: &str, token: Option<&str>, queue: Arc<Mutex<Vec<WebApiEvent>>>) {
     let url = web_api_url(server_url, "/api/v1/artifacts");
     let request = web_request_with_auth(url, token);
     ehttp::fetch(request, move |result| {
@@ -441,9 +435,58 @@ fn web_fetch_artifacts(server_url: &str, token: &str, queue: Arc<Mutex<Vec<WebAp
     });
 }
 
+fn web_upload_artifact(
+    server_url: &str,
+    token: Option<&str>,
+    name: String,
+    note: Option<String>,
+    elf: Vec<u8>,
+    queue: Arc<Mutex<Vec<WebApiEvent>>>,
+) {
+    let url = web_api_url(server_url, "/api/v1/artifacts");
+    let mut request = match ehttp::Request::json(
+        url,
+        &UploadArtifactRequest {
+            name,
+            note,
+            target: "riscv32imafc-unknown-none-elf".to_string(),
+            elf_base64: base64::engine::general_purpose::STANDARD.encode(elf),
+        },
+    ) {
+        Ok(req) => req,
+        Err(err) => {
+            push_web_event(
+                &queue,
+                WebApiEvent::UploadResult(Err(format!(
+                    "failed to serialize upload payload: {err}"
+                ))),
+            );
+            return;
+        }
+    };
+    request.method = "POST".to_string();
+    if let Some(token) = token {
+        request
+            .headers
+            .insert("Authorization", format!("Bearer {token}"));
+    }
+
+    ehttp::fetch(request, move |result| {
+        let event = match result {
+            Ok(resp) if resp.ok => WebApiEvent::UploadResult(
+                resp.json::<UploadArtifactResponse>()
+                    .map_err(|err| format!("invalid upload response: {err}")),
+            ),
+            Ok(resp) => WebApiEvent::UploadResult(Err(response_error(&resp))),
+            Err(err) => WebApiEvent::UploadResult(Err(format!("network error: {err}"))),
+        };
+        push_web_event(&queue, event);
+    });
+}
+
 fn web_fetch_artifact_elf(
     server_url: &str,
-    token: &str,
+    token: Option<&str>,
     artifact_id: i64,
     request_id: u64,
     results_queue: Arc<Mutex<Vec<CompileResult>>>,
@@ -474,6 +517,52 @@ fn web_fetch_artifact_elf(
     });
 }
 
+fn maybe_auth_token(web_state: &WebPortalState) -> Result<Option<String>, String> {
+    match web_state.auth_required {
+        Some(true) => web_state
+            .token
+            .clone()
+            .map(Some)
+            .ok_or_else(|| "Login required".to_string()),
+        Some(false) => Ok(None),
+        None => Err("Server capabilities not loaded yet".to_string()),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pick_artifact_for_upload_native() -> Result<Option<(String, Vec<u8>)>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(&path).map_err(|e| format!("failed to read file: {e}"))?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "artifact.elf".to_string());
+    Ok(Some((name, bytes)))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pick_artifact_for_upload_web(
+    server_url: String,
+    token: Option<String>,
+    queue: Arc<Mutex<Vec<WebApiEvent>>>,
+) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(file) = rfd::AsyncFileDialog::new()
+            .pick_file()
+            .await
+        else {
+            return;
+        };
+        let bytes = file.read().await;
+        let name = file.file_name();
+        web_upload_artifact(&server_url, token.as_deref(), name, None, bytes, queue);
+    });
+}
+
 fn handle_web_api_commands(
     mut commands: MessageReader<WebApiCommand>,
     mut web_state: ResMut<WebPortalState>,
@@ -481,6 +570,10 @@ fn handle_web_api_commands(
 ) {
     for command in commands.read() {
         match command {
+            WebApiCommand::RefreshCapabilities => {
+                web_state.status_message = Some("Loading server capabilities...".to_string());
+                web_fetch_capabilities(&web_state.server_url, web_queue.events.clone());
+            }
             WebApiCommand::Login => {
                 let username = web_state.username_input.trim().to_string();
                 let password = web_state.password_input.clone();
@@ -497,23 +590,68 @@ fn handle_web_api_commands(
                     web_queue.events.clone(),
                 );
             }
-            WebApiCommand::LoadScripts => {
-                let Some(token) = web_state.token.clone() else {
-                    web_state.status_message =
-                        Some("Login required before loading scripts".to_string());
-                    continue;
-                };
-                web_state.status_message = Some("Loading scripts...".to_string());
-                web_fetch_scripts(&web_state.server_url, &token, web_queue.events.clone());
-            }
             WebApiCommand::LoadArtifacts => {
-                let Some(token) = web_state.token.clone() else {
+                if web_state.auth_required.is_none() {
                     web_state.status_message =
-                        Some("Login required before loading artifacts".to_string());
+                        Some("Checking server capabilities first...".to_string());
+                    web_fetch_capabilities(&web_state.server_url, web_queue.events.clone());
                     continue;
+                }
+                let token = match maybe_auth_token(&web_state) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        web_state.status_message = Some(error);
+                        continue;
+                    }
                 };
                 web_state.status_message = Some("Loading artifacts...".to_string());
-                web_fetch_artifacts(&web_state.server_url, &token, web_queue.events.clone());
+                web_fetch_artifacts(
+                    &web_state.server_url,
+                    token.as_deref(),
+                    web_queue.events.clone(),
+                );
+            }
+            WebApiCommand::UploadArtifact => {
+                if web_state.auth_required.is_none() {
+                    web_state.status_message =
+                        Some("Checking server capabilities first...".to_string());
+                    web_fetch_capabilities(&web_state.server_url, web_queue.events.clone());
+                    continue;
+                }
+                let token = match maybe_auth_token(&web_state) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        web_state.status_message = Some(error);
+                        continue;
+                    }
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                match pick_artifact_for_upload_native() {
+                    Ok(Some((name, bytes))) => {
+                        web_state.status_message = Some(format!("Uploading '{name}'..."));
+                        web_upload_artifact(
+                            &web_state.server_url,
+                            token.as_deref(),
+                            name,
+                            None,
+                            bytes,
+                            web_queue.events.clone(),
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        web_state.status_message = Some(error);
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    web_state.status_message = Some("Pick artifact to upload...".to_string());
+                    pick_artifact_for_upload_web(
+                        web_state.server_url.clone(),
+                        token,
+                        web_queue.events.clone(),
+                    );
+                }
             }
         }
     }
@@ -527,6 +665,25 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
 
     for event in events {
         match event {
+            WebApiEvent::Capabilities(result) => match result {
+                Ok(caps) => {
+                    web_state.auth_required = Some(caps.auth_required);
+                    web_state.status_message = Some(format!(
+                        "Connected: mode={}, auth_required={}",
+                        caps.mode, caps.auth_required
+                    ));
+                    if let Ok(token) = maybe_auth_token(&web_state) {
+                        web_fetch_artifacts(
+                            &web_state.server_url,
+                            token.as_deref(),
+                            web_queue.events.clone(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    web_state.status_message = Some(format!("Capability check failed: {error}"));
+                }
+            },
             WebApiEvent::Login(result) => match result {
                 Ok(login) => {
                     web_state.token = Some(login.token);
@@ -538,16 +695,6 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
                     web_state.status_message = Some(format!("Login failed: {error}"));
                 }
             },
-            WebApiEvent::Scripts(result) => match result {
-                Ok(scripts) => {
-                    web_state.scripts = scripts;
-                    web_state.status_message =
-                        Some(format!("Loaded {} scripts", web_state.scripts.len()));
-                }
-                Err(error) => {
-                    web_state.status_message = Some(format!("Loading scripts failed: {error}"));
-                }
-            },
             WebApiEvent::Artifacts(result) => match result {
                 Ok(artifacts) => {
                     web_state.artifacts = artifacts;
@@ -556,6 +703,22 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
                 }
                 Err(error) => {
                     web_state.status_message = Some(format!("Loading artifacts failed: {error}"));
+                }
+            },
+            WebApiEvent::UploadResult(result) => match result {
+                Ok(upload) => {
+                    web_state.status_message =
+                        Some(format!("Uploaded artifact #{}", upload.artifact_id));
+                    if let Ok(token) = maybe_auth_token(&web_state) {
+                        web_fetch_artifacts(
+                            &web_state.server_url,
+                            token.as_deref(),
+                            web_queue.events.clone(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    web_state.status_message = Some(format!("Upload failed: {error}"));
                 }
             },
         }
@@ -690,7 +853,7 @@ fn grid_offset(index: usize) -> Vec2 {
 
 fn handle_spawn_car_event(
     mut events: MessageReader<SpawnCarRequest>,
-    mut compile_pipeline: ResMut<BotCompilePipeline>,
+    mut compile_pipeline: ResMut<ArtifactFetchPipeline>,
     web_state: Res<WebPortalState>,
     state: Res<State<SimState>>,
 ) {
@@ -706,44 +869,19 @@ fn handle_spawn_car_event(
             .insert(request_id, event.driver.clone());
 
         match &event.driver {
-            DriverType::LocalBinary(binary) => {
-                compile_pipeline.status_message =
-                    Some(format!("Compiling bot binary '{binary}'..."));
-                #[cfg(target_arch = "wasm32")]
-                {
-                    compile_pipeline.pending.remove(&request_id);
-                    compile_pipeline.status_message = Some(
-                        "Local bot compile is unavailable in web builds. Select a remote artifact."
-                            .to_string(),
-                    );
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    if compile_pipeline
-                        .request_tx
-                        .send(CompileRequest {
-                            id: request_id,
-                            binary: binary.clone(),
-                        })
-                        .is_err()
-                    {
-                        compile_pipeline.pending.remove(&request_id);
-                        compile_pipeline.status_message =
-                            Some("Failed to queue bot compile request".to_string());
-                    }
-                }
-            }
             DriverType::RemoteArtifact { id } => {
-                let Some(token) = web_state.token.as_ref() else {
-                    compile_pipeline.pending.remove(&request_id);
-                    compile_pipeline.status_message =
-                        Some("Login required to load remote artifacts".to_string());
-                    continue;
+                let token = match maybe_auth_token(&web_state) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        compile_pipeline.pending.remove(&request_id);
+                        compile_pipeline.status_message = Some(error);
+                        continue;
+                    }
                 };
                 compile_pipeline.status_message = Some(format!("Downloading artifact #{id}..."));
                 web_fetch_artifact_elf(
                     &web_state.server_url,
-                    token,
+                    token.as_deref(),
                     *id,
                     request_id,
                     compile_pipeline.async_results.clone(),
@@ -753,26 +891,19 @@ fn handle_spawn_car_event(
     }
 }
 
-fn process_compiled_bot_results(
+fn process_artifact_fetch_results(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     track_path: Res<TrackPath>,
     track_spline: Res<track::TrackSpline>,
     mut manager: ResMut<RaceManager>,
-    mut compile_pipeline: ResMut<BotCompilePipeline>,
+    mut compile_pipeline: ResMut<ArtifactFetchPipeline>,
     state: Res<State<SimState>>,
 ) {
     let mut results = Vec::new();
     if let Ok(mut async_results) = compile_pipeline.async_results.lock() {
         results.append(&mut *async_results);
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(receiver) = compile_pipeline.result_rx.lock() {
-        while let Ok(result) = receiver.try_recv() {
-            results.push(result);
-        }
-    }
-
     for result in results {
         let Some(driver) = compile_pipeline.pending.remove(&result.id) else {
             continue;
@@ -798,11 +929,13 @@ fn process_compiled_bot_results(
                     Some(elf_bytes),
                 );
                 compile_pipeline.status_message =
-                    Some(format!("Compiled and spawned '{}'", result.binary));
+                    Some(format!("Loaded and spawned '{}'", result.binary));
             }
             Err(error) => {
-                compile_pipeline.status_message =
-                    Some(format!("Compile failed for '{}': {}", result.binary, error));
+                compile_pipeline.status_message = Some(format!(
+                    "Artifact load failed for '{}': {}",
+                    result.binary, error
+                ));
             }
         }
     }

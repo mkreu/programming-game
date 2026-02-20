@@ -1,5 +1,5 @@
 [workspace]
-members = ["racing", "emulator", "race-protocol", "racehub", "race-connector"]
+members = ["racing", "emulator", "race-protocol", "racehub"]
 resolver = "3"
 exclude = ["bot"]
 
