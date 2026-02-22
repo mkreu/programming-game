@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-type Capabilities = { auth_required: boolean; mode: string };
+type Capabilities = { auth_required: boolean; mode: string; registration_enabled?: boolean };
 
 type LoginResponse = {
   token: string;

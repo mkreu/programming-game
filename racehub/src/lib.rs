@@ -9,10 +9,10 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use axum::{
-    Json, Router,
-    extract::{Path as AxumPath, State},
+    Form, Json, Router,
+    extract::{OriginalUri, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use base64::Engine;
@@ -23,6 +23,7 @@ use race_protocol::{
 };
 use rand::Rng;
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::Deserialize;
 use tokio::sync::Mutex;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
@@ -64,6 +65,7 @@ pub struct ServerConfig {
     pub static_dir: Option<PathBuf>,
     pub auth_mode: AuthMode,
     pub cookie_secure: bool,
+    pub registration_enabled: bool,
 }
 
 impl Default for ServerConfig {
@@ -75,6 +77,7 @@ impl Default for ServerConfig {
             static_dir: Some(PathBuf::from("web-dist")),
             auth_mode: AuthMode::Required,
             cookie_secure: false,
+            registration_enabled: true,
         }
     }
 }
@@ -83,8 +86,35 @@ impl Default for ServerConfig {
 struct AppState {
     db: Arc<Mutex<Connection>>,
     artifacts_dir: PathBuf,
+    static_dir: Option<PathBuf>,
     auth_mode: AuthMode,
     cookie_secure: bool,
+    registration_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebLoginQuery {
+    next: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebLoginForm {
+    username: String,
+    password: String,
+    next: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebRegisterQuery {
+    next: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebRegisterForm {
+    username: String,
+    password: String,
+    next: Option<String>,
 }
 
 #[derive(Debug)]
@@ -104,6 +134,13 @@ impl ApiError {
     fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: message.into(),
         }
     }
@@ -144,11 +181,26 @@ pub async fn run_server(config: ServerConfig) -> Result<(), Box<dyn std::error::
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
         artifacts_dir: config.artifacts_dir,
+        static_dir: config.static_dir.clone(),
         auth_mode: config.auth_mode,
         cookie_secure: config.cookie_secure,
+        registration_enabled: config.registration_enabled,
     };
 
+    let app = build_app(state, config.static_dir);
+
+    let addr: SocketAddr = config.bind.parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn build_app(state: AppState, static_dir: Option<PathBuf>) -> Router {
     let mut app = Router::new()
+        .route("/", get(web_game_entry))
+        .route("/index.html", get(web_game_entry))
+        .route("/login", get(web_login_get).post(web_login_post))
+        .route("/register", get(web_register_get).post(web_register_post))
         .route("/healthz", get(healthz))
         .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/auth/register", post(register))
@@ -167,14 +219,11 @@ pub async fn run_server(config: ServerConfig) -> Result<(), Box<dyn std::error::
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    if let Some(dir) = &config.static_dir {
+    if let Some(dir) = static_dir {
         app = app.fallback_service(ServeDir::new(dir));
     }
 
-    let addr: SocketAddr = config.bind.parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+    app
 }
 
 async fn healthz() -> &'static str {
@@ -185,7 +234,138 @@ async fn capabilities(State(state): State<AppState>) -> Json<ServerCapabilities>
     Json(ServerCapabilities {
         auth_required: state.auth_mode.auth_required(),
         mode: state.auth_mode.as_str().to_string(),
+        registration_enabled: state.registration_enabled,
     })
+}
+
+async fn web_game_entry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
+) -> Response {
+    if state.auth_mode == AuthMode::Required && authenticate(&state, &headers).await.is_err() {
+        let next = sanitize_next(
+            uri.path_and_query()
+                .map(|v| v.as_str())
+                .unwrap_or("/index.html"),
+        );
+        return render_login_page(next, None, None, state.registration_enabled).into_response();
+    }
+
+    match load_index_html(&state) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn web_login_get(
+    State(state): State<AppState>,
+    Query(query): Query<WebLoginQuery>,
+) -> impl IntoResponse {
+    let next = sanitize_next(query.next.as_deref().unwrap_or("/"));
+    let error = match query.error.as_deref() {
+        Some("registration_disabled") => Some("Registration is disabled"),
+        _ => None,
+    };
+    render_login_page(next, None, error, state.registration_enabled)
+}
+
+async fn web_login_post(
+    State(state): State<AppState>,
+    Form(payload): Form<WebLoginForm>,
+) -> Response {
+    if state.auth_mode == AuthMode::Disabled {
+        let target = sanitize_next(payload.next.as_deref().unwrap_or("/"));
+        return Redirect::to(target).into_response();
+    }
+
+    let username = payload.username.trim();
+    let next = sanitize_next(payload.next.as_deref().unwrap_or("/"));
+
+    match create_session_for_credentials(&state, username, &payload.password).await {
+        Ok((_user, token)) => {
+            let cookie = session_cookie(&token, state.cookie_secure);
+            (
+                StatusCode::SEE_OTHER,
+                [
+                    (header::SET_COOKIE, cookie),
+                    (
+                        header::LOCATION,
+                        HeaderValue::from_str(next).expect("sanitized redirect target"),
+                    ),
+                ],
+            )
+                .into_response()
+        }
+        Err(_) => (
+            StatusCode::UNAUTHORIZED,
+            render_login_page(
+                next,
+                Some(username),
+                Some("Invalid username or password"),
+                state.registration_enabled,
+            ),
+        )
+            .into_response(),
+    }
+}
+
+async fn web_register_get(
+    State(state): State<AppState>,
+    Query(query): Query<WebRegisterQuery>,
+) -> Response {
+    let next = sanitize_next(query.next.as_deref().unwrap_or("/"));
+    if state.auth_mode == AuthMode::Disabled || !state.registration_enabled {
+        return Redirect::to(next_login_with_error(next, Some("registration_disabled")).as_str())
+            .into_response();
+    }
+    render_register_page(next, None, None).into_response()
+}
+
+async fn web_register_post(
+    State(state): State<AppState>,
+    Form(payload): Form<WebRegisterForm>,
+) -> Response {
+    let next = sanitize_next(payload.next.as_deref().unwrap_or("/"));
+    if state.auth_mode == AuthMode::Disabled || !state.registration_enabled {
+        return Redirect::to(next_login_with_error(next, Some("registration_disabled")).as_str())
+            .into_response();
+    }
+
+    let username = payload.username.trim();
+    match create_user_with_password(&state, username, &payload.password).await {
+        Ok(_user) => {
+            match create_session_for_credentials(&state, username, &payload.password).await {
+                Ok((_user, token)) => {
+                    let cookie = session_cookie(&token, state.cookie_secure);
+                    (
+                        StatusCode::SEE_OTHER,
+                        [
+                            (header::SET_COOKIE, cookie),
+                            (
+                                header::LOCATION,
+                                HeaderValue::from_str(next).expect("sanitized redirect target"),
+                            ),
+                        ],
+                    )
+                        .into_response()
+                }
+                Err(err) => err.into_response(),
+            }
+        }
+        Err(err) => {
+            let status = if err.status == StatusCode::INTERNAL_SERVER_ERROR {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (
+                status,
+                render_register_page(next, Some(username), Some(&err.message)),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn register(
@@ -195,34 +375,12 @@ async fn register(
     if state.auth_mode == AuthMode::Disabled {
         return Err(ApiError::bad_request("auth is disabled in standalone mode"));
     }
-
-    if payload.username.trim().is_empty() {
-        return Err(ApiError::bad_request("username must not be empty"));
+    if !state.registration_enabled {
+        return Err(ApiError::forbidden("registration is disabled"));
     }
-    if payload.password.len() < 8 {
-        return Err(ApiError::bad_request("password must be at least 8 chars"));
-    }
-
-    let hash = hash_password(&payload.password)?;
-    let now = now_utc();
-
-    let db = state.db.lock().await;
-    let inserted = db.execute(
-        "INSERT INTO users (username, password_hash, created_at) VALUES (?1, ?2, ?3)",
-        params![payload.username.trim(), hash, now],
-    );
-
-    if let Err(err) = inserted {
-        if err.to_string().contains("UNIQUE") {
-            return Err(ApiError::bad_request("username already exists"));
-        }
-        return Err(ApiError::internal(format!("failed to create user: {err}")));
-    }
-
-    Ok(Json(UserInfo {
-        id: db.last_insert_rowid(),
-        username: payload.username.trim().to_string(),
-    }))
+    let user =
+        create_user_with_password(&state, payload.username.trim(), &payload.password).await?;
+    Ok(Json(user))
 }
 
 async fn login(
@@ -234,39 +392,10 @@ async fn login(
     }
 
     let username = payload.username.trim();
-    if username.is_empty() {
-        return Err(ApiError::bad_request("username must not be empty"));
-    }
-
-    let db = state.db.lock().await;
-    let user_row: Option<(i64, String)> = db
-        .query_row(
-            "SELECT id, password_hash FROM users WHERE username = ?1",
-            params![username],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| ApiError::internal(format!("failed to query user: {e}")))?;
-
-    let Some((user_id, password_hash)) = user_row else {
-        return Err(ApiError::unauthorized("invalid credentials"));
-    };
-
-    verify_password(&payload.password, &password_hash)?;
-
-    let token = generate_token();
-    db.execute(
-        "INSERT INTO sessions (token, user_id, created_at) VALUES (?1, ?2, ?3)",
-        params![token, user_id, now_utc()],
-    )
-    .map_err(|e| ApiError::internal(format!("failed to create session: {e}")))?;
-
+    let (user, token) = create_session_for_credentials(&state, username, &payload.password).await?;
     let login = LoginResponse {
         token: token.clone(),
-        user: UserInfo {
-            id: user_id,
-            username: username.to_string(),
-        },
+        user,
     };
 
     let cookie = session_cookie(&token, state.cookie_secure);
@@ -532,6 +661,230 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<UserInfo,
     user.ok_or_else(|| ApiError::unauthorized("invalid or expired session"))
 }
 
+async fn create_session_for_credentials(
+    state: &AppState,
+    username: &str,
+    password: &str,
+) -> Result<(UserInfo, String), ApiError> {
+    if username.is_empty() {
+        return Err(ApiError::bad_request("username must not be empty"));
+    }
+
+    let db = state.db.lock().await;
+    let user_row: Option<(i64, String)> = db
+        .query_row(
+            "SELECT id, password_hash FROM users WHERE username = ?1",
+            params![username],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| ApiError::internal(format!("failed to query user: {e}")))?;
+
+    let Some((user_id, password_hash)) = user_row else {
+        return Err(ApiError::unauthorized("invalid credentials"));
+    };
+
+    verify_password(password, &password_hash)?;
+
+    let token = generate_token();
+    db.execute(
+        "INSERT INTO sessions (token, user_id, created_at) VALUES (?1, ?2, ?3)",
+        params![token, user_id, now_utc()],
+    )
+    .map_err(|e| ApiError::internal(format!("failed to create session: {e}")))?;
+
+    Ok((
+        UserInfo {
+            id: user_id,
+            username: username.to_string(),
+        },
+        token,
+    ))
+}
+
+async fn create_user_with_password(
+    state: &AppState,
+    username: &str,
+    password: &str,
+) -> Result<UserInfo, ApiError> {
+    if username.is_empty() {
+        return Err(ApiError::bad_request("username must not be empty"));
+    }
+    if password.len() < 8 {
+        return Err(ApiError::bad_request("password must be at least 8 chars"));
+    }
+
+    let hash = hash_password(password)?;
+    let db = state.db.lock().await;
+    let inserted = db.execute(
+        "INSERT INTO users (username, password_hash, created_at) VALUES (?1, ?2, ?3)",
+        params![username, hash, now_utc()],
+    );
+
+    if let Err(err) = inserted {
+        if err.to_string().contains("UNIQUE") {
+            return Err(ApiError::bad_request("username already exists"));
+        }
+        return Err(ApiError::internal(format!("failed to create user: {err}")));
+    }
+
+    Ok(UserInfo {
+        id: db.last_insert_rowid(),
+        username: username.to_string(),
+    })
+}
+
+fn sanitize_next(next: &str) -> &str {
+    if next.starts_with('/') && !next.starts_with("//") {
+        next
+    } else {
+        "/"
+    }
+}
+
+fn next_login_with_error(next: &str, error: Option<&str>) -> String {
+    let mut url = format!("/login?next={}", urlencoding::encode(next));
+    if let Some(error) = error {
+        url.push_str("&error=");
+        url.push_str(&urlencoding::encode(error));
+    }
+    url
+}
+
+fn render_login_page(
+    next: &str,
+    username: Option<&str>,
+    error: Option<&str>,
+    registration_enabled: bool,
+) -> Html<String> {
+    let escaped_next = escape_html(next);
+    let escaped_username = escape_html(username.unwrap_or(""));
+    let error_html = match error {
+        Some(message) => format!("<p class=\"error\">{}</p>", escape_html(message)),
+        None => String::new(),
+    };
+    let register_link = if registration_enabled {
+        format!(
+            "<p class=\"hint\"><a href=\"/register?next={}\">Create account</a></p>",
+            urlencoding::encode(next)
+        )
+    } else {
+        String::new()
+    };
+    Html(format!(
+        "<!doctype html>\
+         <html lang=\"en\">\
+         <head>\
+         <meta charset=\"utf-8\" />\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\
+         <title>RaceHub Login</title>\
+         <style>\
+         body {{ margin:0; min-height:100vh; display:grid; place-items:center; font-family:system-ui,sans-serif; background:#0f1217; color:#f5f7fb; }}\
+         .card {{ width:min(420px, calc(100vw - 2rem)); background:#171c24; border:1px solid #2a3240; border-radius:12px; padding:1.25rem; box-sizing:border-box; }}\
+         h1 {{ margin:0 0 1rem 0; font-size:1.25rem; }}\
+         label {{ display:block; margin:0 0 0.25rem 0; font-size:0.9rem; color:#c7d0dd; }}\
+         input {{ width:100%; box-sizing:border-box; border:1px solid #3a4455; border-radius:8px; padding:0.6rem 0.75rem; margin:0 0 0.75rem 0; background:#0f141c; color:#f5f7fb; }}\
+         button {{ width:100%; border:0; border-radius:8px; padding:0.65rem 0.75rem; font-weight:600; background:#6ad490; color:#131417; cursor:pointer; }}\
+         .error {{ margin:0 0 0.75rem 0; color:#ff8d8d; font-size:0.9rem; }}\
+         .hint {{ margin:0.75rem 0 0; color:#a9b5c5; font-size:0.8rem; }}\
+         a {{ color:#9bd0ff; }}\
+         </style>\
+         </head>\
+         <body>\
+         <main class=\"card\">\
+         <h1>Sign in to RaceHub</h1>\
+         {error_html}\
+         <form method=\"post\" action=\"/login\">\
+         <input type=\"hidden\" name=\"next\" value=\"{escaped_next}\" />\
+         <label for=\"username\">Username</label>\
+         <input id=\"username\" name=\"username\" autocomplete=\"username\" required value=\"{escaped_username}\" />\
+         <label for=\"password\">Password</label>\
+         <input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required />\
+         <button type=\"submit\">Log in</button>\
+         </form>\
+         {register_link}\
+         <p class=\"hint\">You will be redirected back to the game after login.</p>\
+         </main>\
+         </body>\
+         </html>"
+    ))
+}
+
+fn render_register_page(next: &str, username: Option<&str>, error: Option<&str>) -> Html<String> {
+    let escaped_next = escape_html(next);
+    let escaped_username = escape_html(username.unwrap_or(""));
+    let error_html = match error {
+        Some(message) => format!("<p class=\"error\">{}</p>", escape_html(message)),
+        None => String::new(),
+    };
+    Html(format!(
+        "<!doctype html>\
+         <html lang=\"en\">\
+         <head>\
+         <meta charset=\"utf-8\" />\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\
+         <title>RaceHub Register</title>\
+         <style>\
+         body {{ margin:0; min-height:100vh; display:grid; place-items:center; font-family:system-ui,sans-serif; background:#0f1217; color:#f5f7fb; }}\
+         .card {{ width:min(420px, calc(100vw - 2rem)); background:#171c24; border:1px solid #2a3240; border-radius:12px; padding:1.25rem; box-sizing:border-box; }}\
+         h1 {{ margin:0 0 1rem 0; font-size:1.25rem; }}\
+         label {{ display:block; margin:0 0 0.25rem 0; font-size:0.9rem; color:#c7d0dd; }}\
+         input {{ width:100%; box-sizing:border-box; border:1px solid #3a4455; border-radius:8px; padding:0.6rem 0.75rem; margin:0 0 0.75rem 0; background:#0f141c; color:#f5f7fb; }}\
+         button {{ width:100%; border:0; border-radius:8px; padding:0.65rem 0.75rem; font-weight:600; background:#6ad490; color:#131417; cursor:pointer; }}\
+         .error {{ margin:0 0 0.75rem 0; color:#ff8d8d; font-size:0.9rem; }}\
+         .hint {{ margin:0.75rem 0 0; color:#a9b5c5; font-size:0.8rem; }}\
+         a {{ color:#9bd0ff; }}\
+         </style>\
+         </head>\
+         <body>\
+         <main class=\"card\">\
+         <h1>Create RaceHub account</h1>\
+         {error_html}\
+         <form method=\"post\" action=\"/register\">\
+         <input type=\"hidden\" name=\"next\" value=\"{escaped_next}\" />\
+         <label for=\"username\">Username</label>\
+         <input id=\"username\" name=\"username\" autocomplete=\"username\" required value=\"{escaped_username}\" />\
+         <label for=\"password\">Password</label>\
+         <input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"new-password\" required />\
+         <button type=\"submit\">Create account</button>\
+         </form>\
+         <p class=\"hint\">Already have an account? <a href=\"/login?next={}\">Sign in</a></p>\
+         </main>\
+         </body>\
+         </html>",
+        urlencoding::encode(next)
+    ))
+}
+
+fn load_index_html(state: &AppState) -> Result<String, ApiError> {
+    let Some(static_dir) = &state.static_dir else {
+        return Err(ApiError::not_found("static file serving is disabled"));
+    };
+    let index = static_dir.join("index.html");
+    std::fs::read_to_string(&index).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found("index.html was not found in static dir")
+        } else {
+            ApiError::internal(format!("failed to read '{}': {e}", index.display()))
+        }
+    })
+}
+
+fn escape_html(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn bearer_token_opt(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let token = value.strip_prefix("Bearer ")?.trim();
@@ -645,4 +998,383 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 #[allow(dead_code)]
 fn _ensure_under(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use race_protocol::LoginResponse;
+    use tower::ServiceExt;
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let mut rng = rand::rng();
+        let suffix: u64 = rng.random();
+        let dir = std::env::temp_dir().join(format!("{prefix}_{suffix}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn setup_test_state(
+        auth_mode: AuthMode,
+        registration_enabled: bool,
+    ) -> (AppState, PathBuf, PathBuf) {
+        let static_dir = unique_temp_dir("racehub_static");
+        let artifacts_dir = unique_temp_dir("racehub_artifacts");
+        std::fs::write(
+            static_dir.join("index.html"),
+            "<html><body>game entry</body></html>",
+        )
+        .expect("write index");
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&conn).expect("run migrations");
+        ensure_local_user(&conn).expect("ensure local user");
+        let state = AppState {
+            db: Arc::new(Mutex::new(conn)),
+            artifacts_dir: artifacts_dir.clone(),
+            static_dir: Some(static_dir.clone()),
+            auth_mode,
+            cookie_secure: false,
+            registration_enabled,
+        };
+        (state, static_dir, artifacts_dir)
+    }
+
+    async fn create_user(state: &AppState, username: &str, password: &str) {
+        let hash = hash_password(password).expect("hash password");
+        let db = state.db.lock().await;
+        db.execute(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?1, ?2, ?3)",
+            params![username, hash, now_utc()],
+        )
+        .expect("insert user");
+    }
+
+    async fn make_session_cookie(state: &AppState, username: &str, password: &str) -> String {
+        let (_, token) = create_session_for_credentials(state, username, password)
+            .await
+            .expect("create session");
+        format!("{COOKIE_NAME}={token}")
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_game_entry_shows_login_in_required_mode() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(text.contains("Sign in to RaceHub"));
+        assert!(text.contains("name=\"next\" value=\"/\""));
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn authenticated_game_entry_serves_index() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        let cookie = make_session_cookie(&state, "alice", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(text.contains("game entry"));
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn web_login_success_sets_cookie_and_redirects() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "username=alice&password=password123&next=%2Findex.html",
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()
+                .get(header::LOCATION)
+                .expect("location")
+                .to_str()
+                .expect("location str"),
+            "/index.html"
+        );
+        let cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("set-cookie")
+            .to_str()
+            .expect("cookie str");
+        assert!(cookie.contains("racehub_session="));
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn web_login_failure_renders_error() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "username=alice&password=wrongpassword&next=%2Findex.html",
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(resp.headers().get(header::SET_COOKIE).is_none());
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(text.contains("Invalid username or password"));
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[test]
+    fn sanitize_next_rejects_external_targets() {
+        assert_eq!(sanitize_next("https://evil.com"), "/");
+        assert_eq!(sanitize_next("//evil.com"), "/");
+        assert_eq!(sanitize_next("/assets/foo"), "/assets/foo");
+    }
+
+    #[tokio::test]
+    async fn api_login_still_returns_json_and_cookie() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        "{\"username\":\"alice\",\"password\":\"password123\"}",
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key(header::SET_COOKIE));
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let parsed: LoginResponse = serde_json::from_slice(&body).expect("login response json");
+        assert_eq!(parsed.user.username, "alice");
+        assert!(!parsed.token.is_empty());
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn capabilities_include_registration_enabled() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, false);
+        let app = build_app(state, Some(static_dir.clone()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/capabilities")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let caps: ServerCapabilities = serde_json::from_slice(&body).expect("caps json");
+        assert!(caps.auth_required);
+        assert!(!caps.registration_enabled);
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn api_register_blocked_when_registration_disabled() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, false);
+        let app = build_app(state, Some(static_dir.clone()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        "{\"username\":\"alice\",\"password\":\"password123\"}",
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let error: ErrorResponse = serde_json::from_slice(&body).expect("error json");
+        assert_eq!(error.error, "registration is disabled");
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn register_flow_creates_session_and_redirects() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        let app = build_app(state, Some(static_dir.clone()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "username=bob&password=password123&next=%2Findex.html",
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()
+                .get(header::LOCATION)
+                .expect("location")
+                .to_str()
+                .expect("location str"),
+            "/index.html"
+        );
+        assert!(resp.headers().contains_key(header::SET_COOKIE));
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn register_routes_redirect_when_disabled() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, false);
+        let app = build_app(state, Some(static_dir.clone()));
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/register?next=%2Findex.html")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()
+                .get(header::LOCATION)
+                .expect("location")
+                .to_str()
+                .expect("location str"),
+            "/login?next=%2Findex.html&error=registration_disabled"
+        );
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "username=bob&password=password123&next=%2Findex.html",
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()
+                .get(header::LOCATION)
+                .expect("location")
+                .to_str()
+                .expect("location str"),
+            "/login?next=%2Findex.html&error=registration_disabled"
+        );
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn login_page_hides_register_link_when_disabled() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, false);
+        let app = build_app(state, Some(static_dir.clone()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/login?next=%2F")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(!text.contains("Create account"));
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
 }

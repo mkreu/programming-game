@@ -164,8 +164,17 @@ mod main_game {
     impl Default for WebPortalState {
         fn default() -> Self {
             Self {
-                server_url: std::env::var("RACEHUB_URL")
-                    .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string()),
+                server_url: {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        String::new()
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        std::env::var("RACEHUB_URL")
+                            .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string())
+                    }
+                },
                 standalone_mode: false,
                 auth_required: None,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -245,7 +254,14 @@ fn main() {
 
     App::new()
         .add_plugins((
-            DefaultPlugins,
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Programming Game".into(),
+                    fit_canvas_to_parent: true,
+                    ..default()
+                }),
+                ..default()
+            }),
             FrameTimeDiagnosticsPlugin::default(),
             PhysicsPlugins::default(),
             ui::RaceUiPlugin,
@@ -385,7 +401,11 @@ fn trigger_initial_capability_check(mut cmds: MessageWriter<WebApiCommand>) {
 }
 
 fn web_api_url(base: &str, path: &str) -> String {
-    format!("{}{}", base.trim_end_matches('/'), path)
+    if base.trim().is_empty() {
+        path.to_string()
+    } else {
+        format!("{}{}", base.trim_end_matches('/'), path)
+    }
 }
 
 fn web_request_with_auth(url: String, _token: Option<&str>) -> ehttp::Request {
@@ -664,7 +684,8 @@ fn handle_web_api_commands(
     for command in commands.read() {
         match command {
             WebApiCommand::RefreshCapabilities => {
-                web_state.status_message = Some("[capabilities] Loading server capabilities...".to_string());
+                web_state.status_message =
+                    Some("[capabilities] Loading server capabilities...".to_string());
                 web_fetch_capabilities(&web_state.server_url, web_queue.events.clone());
             }
             WebApiCommand::LoadArtifacts => {
@@ -722,7 +743,8 @@ fn handle_web_api_commands(
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
-                    web_state.status_message = Some("[upload] Pick artifact to upload...".to_string());
+                    web_state.status_message =
+                        Some("[upload] Pick artifact to upload...".to_string());
                     pick_artifact_for_upload_web(
                         web_state.server_url.clone(),
                         token,
@@ -768,8 +790,8 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
                 Ok(caps) => {
                     web_state.auth_required = Some(caps.auth_required);
                     web_state.status_message = Some(format!(
-                        "[capabilities] Connected: mode={}, auth_required={}",
-                        caps.mode, caps.auth_required
+                        "[capabilities] Connected: mode={}, auth_required={}, registration_enabled={}",
+                        caps.mode, caps.auth_required, caps.registration_enabled
                     ));
                     #[cfg(not(target_arch = "wasm32"))]
                     if caps.auth_required && web_state.token.is_none() {
@@ -794,8 +816,9 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
                     }
                 }
                 Err(error) => {
-                    web_state.status_message =
-                        Some(format!("[error][capabilities] Capability check failed: {error}"));
+                    web_state.status_message = Some(format!(
+                        "[error][capabilities] Capability check failed: {error}"
+                    ));
                 }
             },
             #[cfg(not(target_arch = "wasm32"))]
@@ -817,8 +840,10 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
             WebApiEvent::Artifacts(result) => match result {
                 Ok(artifacts) => {
                     web_state.artifacts = artifacts;
-                    web_state.status_message =
-                        Some(format!("[load] Loaded {} artifacts", web_state.artifacts.len()));
+                    web_state.status_message = Some(format!(
+                        "[load] Loaded {} artifacts",
+                        web_state.artifacts.len()
+                    ));
                 }
                 Err(error) => {
                     web_state.status_message =
@@ -827,8 +852,10 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
             },
             WebApiEvent::UploadResult(result) => match result {
                 Ok(upload) => {
-                    web_state.status_message =
-                        Some(format!("[upload] Uploaded artifact #{}", upload.artifact_id));
+                    web_state.status_message = Some(format!(
+                        "[upload] Uploaded artifact #{}",
+                        upload.artifact_id
+                    ));
                     if let Ok(token) = maybe_auth_token(&web_state) {
                         web_fetch_artifacts(
                             &web_state.server_url,
@@ -872,8 +899,8 @@ fn setup_track(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let track_file = TrackFile::load_builtin()
-        .unwrap_or_else(|_| panic!("Failed to load track file"));
+    let track_file =
+        TrackFile::load_builtin().unwrap_or_else(|_| panic!("Failed to load track file"));
 
     let control_points = track_file.control_points_vec2();
     let track_width = track_file.metadata.track_width;
@@ -1091,8 +1118,8 @@ fn spawn_car_entry(
     let car_index = manager.cars.len();
     let offset = grid_offset(car_index);
 
-    let track_file = TrackFile::load_builtin()
-        .unwrap_or_else(|_| panic!("Failed to load track file"));
+    let track_file =
+        TrackFile::load_builtin().unwrap_or_else(|_| panic!("Failed to load track file"));
     let start_point = track::first_point_from_file(&track_file);
 
     let position = start_point + offset;

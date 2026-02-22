@@ -151,6 +151,12 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 ### `racehub/` — Single-Executable Backend
 
 - One Axum HTTP process with SQLite (`RACEHUB_DB_PATH`, default `racehub.db`) and filesystem artifact store (`RACEHUB_ARTIFACTS_DIR`, default `racehub_artifacts/`).
+- Browser web routes:
+  - `GET /` and `GET /index.html` serve the web game entry.
+  - In `required` auth mode, unauthenticated access to `/` or `/index.html` renders a login page first.
+  - `GET /login` serves login form HTML and `POST /login` authenticates then redirects back to `next` (default `/`).
+  - `GET /register` serves registration form HTML and `POST /register` creates an account and logs in, then redirects back to `next` (default `/`).
+  - `RACEHUB_REGISTRATION_ENABLED=false` disables registration (API and web flow).
 - API endpoints:
   - `GET /api/v1/capabilities`
   - `POST /api/v1/auth/register`
@@ -168,6 +174,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - `required` (normal server mode)
   - `disabled` (standalone mode, implicit local user)
 - `RACEHUB_COOKIE_SECURE` controls whether the session cookie is marked `Secure`.
+- `RACEHUB_REGISTRATION_ENABLED` controls whether account registration endpoints/UI are enabled (default `true`).
 - `RACEHUB_STATIC_DIR` controls which static directory is served (default `web-dist`; empty disables static serving).
 - Backend scope is intentionally minimal: auth + artifact storage/list/download/delete.
 
@@ -192,6 +199,8 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - capability checks against `racehub`
   - native CLI credential prompt (non-wasm) and login when required
   - browser-cookie-based auth for wasm/web builds (no in-game login fields)
+  - same-origin API URL default in wasm/web builds (relative `/api/...` requests) to avoid cookie loss across hostname mismatches
+  - wasm canvas autosizing via `Window.fit_canvas_to_parent = true` (fills and tracks browser viewport with matching `index.html` CSS)
   - loading artifact lists
   - manual artifact upload from file chooser (native + web)
   - deleting artifacts from RaceHub storage

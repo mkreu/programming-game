@@ -33,7 +33,11 @@ Behavior:
 - Backend default URL: `http://127.0.0.1:8787` (override via `RACEHUB_BIND`).
 - Backend auth mode defaults to required.
 - Native game asks for username/password in terminal on startup.
-- Web game uses browser session cookies (log in through backend HTTP API / website flow).
+- Web game uses browser session cookies.
+  - Browser/wasm API requests default to same-origin paths (`/api/...`) to keep cookie auth working even when hostnames differ (`localhost` vs `127.0.0.1`).
+  - If not logged in, visiting `/` or `/index.html` shows a RaceHub login form.
+  - If registration is enabled, login page includes a "Create account" link to `/register`.
+  - Successful login redirects back to the requested game page.
 - VSCode extension uses bearer token login.
 
 ## Backend Environment Variables
@@ -43,6 +47,7 @@ Behavior:
 - `RACEHUB_ARTIFACTS_DIR` (default `racehub_artifacts`)
 - `RACEHUB_AUTH_MODE` (`required` or `disabled`, default `required`)
 - `RACEHUB_COOKIE_SECURE` (`true/false`, default `false`)
+- `RACEHUB_REGISTRATION_ENABLED` (`true/false`, default `true`)
 - `RACEHUB_STATIC_DIR` (default `web-dist`, set empty to disable static serving)
 
 For standalone backend without game:
@@ -76,11 +81,12 @@ What this produces:
 - `web-dist/index.html` (generated if missing)
 - `web-dist/racing.js` + `web-dist/racing_bg.wasm`
 - `web-dist/assets/` copied from `racing/assets/`
+- Web canvas is configured to fill and dynamically resize with the browser viewport.
 
 Serve web app (same origin as API, so cookie auth works, or optionally with `RACEHUB_AUTH_MODE=disabled`):
 
 ```bash
-cargo run -p racehup
+cargo run -p racehub
 ```
 
 ## VSCode Extension (`vscode-extension/`)

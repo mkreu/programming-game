@@ -35,6 +35,12 @@ pub struct LoginResponse {
 pub struct ServerCapabilities {
     pub auth_required: bool,
     pub mode: String,
+    #[serde(default = "default_registration_enabled")]
+    pub registration_enabled: bool,
+}
+
+fn default_registration_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

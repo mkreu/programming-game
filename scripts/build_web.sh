@@ -53,12 +53,19 @@ if [[ ! -f "$OUT_DIR/index.html" ]]; then
     <style>
       html,
       body {
+        width: 100%;
         margin: 0;
         height: 100%;
+        overflow: hidden;
         background: #111;
+      }
+      body {
+        display: block;
       }
       canvas {
         display: block;
+        width: 100%;
+        height: 100%;
       }
     </style>
   </head>
