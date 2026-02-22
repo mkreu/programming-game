@@ -56,6 +56,46 @@ For standalone backend without game:
 RACEHUB_AUTH_MODE=disabled cargo run -p racehub
 ```
 
+## Docker (RaceHub + Web Game)
+
+Build the production image locally:
+
+```bash
+docker build -t racehub:test .
+```
+
+Run it with persisted data:
+
+```bash
+docker run --rm -p 8787:8787 -v racehub-data:/data ghcr.io/<owner>/racehub:latest
+```
+
+Container defaults:
+- `RACEHUB_BIND=0.0.0.0:8787`
+- `RACEHUB_DB_PATH=/data/racehub.db`
+- `RACEHUB_ARTIFACTS_DIR=/data/racehub_artifacts`
+- `RACEHUB_STATIC_DIR=/opt/racehub/web-dist`
+
+Quick checks:
+- `GET /healthz` returns `ok`
+- `GET /index.html` serves the wasm game
+- `GET /api/v1/capabilities` serves the backend API
+
+## GHCR Publish Workflow
+
+GitHub Actions workflow: `.github/workflows/publish-racehub-image.yml`
+
+Behavior:
+- Pushes container images to `ghcr.io/<owner>/racehub`
+- Triggers on:
+  - pushes to `main`
+  - pushes of tags matching `v*`
+- Uses:
+  - multi-stage Docker build
+  - `cargo-chef` dependency-layer caching
+  - BuildKit GitHub Actions cache (`type=gha`)
+- Publishes `linux/amd64` images with tags for `latest` (default branch), branch/tag refs, and commit SHA.
+
 ## Web Build
 
 Install target and wasm bindgen CLI once:

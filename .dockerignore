@@ -1,0 +1,12 @@
+.git
+.gitignore
+.github
+target
+web-dist
+racehub.db
+racehub_artifacts
+bot/target
+.DS_Store
+*.swp
+*.swo
+*~

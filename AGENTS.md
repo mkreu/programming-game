@@ -8,6 +8,8 @@ A racing game prototype where cars can be driven by AI implemented as **RISC-V p
 
 ```
 Cargo.toml            # Workspace root — members: racing, emulator, race-protocol, racehub. Excludes bot.
+Dockerfile            # Multi-stage production image build (racehub binary + web-dist wasm build)
+/.github/workflows/   # CI workflows, including GHCR container publish
 ├── racing/           # Bevy game — physics, rendering, car spawning, AI systems
 ├── emulator/         # Use-case-agnostic RISC-V emulator (RV32IMAFC + RV32C/Zcf) with Bevy integration
 ├── race-protocol/    # Shared API DTOs used by backend/client/game/extension
@@ -38,6 +40,12 @@ cargo run -p racehub
 
 # Build + serve web app through racehub
 ./scripts/serve_web.sh [--release]
+
+# Build production container (racehub + web-dist)
+docker build -t racehub:test .
+
+# Run container with persistent data volume
+docker run --rm -p 8787:8787 -v racehub-data:/data ghcr.io/<owner>/racehub:latest
 ```
 
 Cars are spawned from ELF artifacts fetched from `racehub` (or uploaded manually in-game). Local runtime bot compilation/discovery is intentionally removed from `racing`.
@@ -177,6 +185,14 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 - `RACEHUB_REGISTRATION_ENABLED` controls whether account registration endpoints/UI are enabled (default `true`).
 - `RACEHUB_STATIC_DIR` controls which static directory is served (default `web-dist`; empty disables static serving).
 - Backend scope is intentionally minimal: auth + artifact storage/list/download/delete.
+- Production container image is built by the root `Dockerfile` and includes:
+  - release `racehub` binary
+  - release wasm game bundle in `/opt/racehub/web-dist`
+  - defaults: `RACEHUB_BIND=0.0.0.0:8787`, `RACEHUB_DB_PATH=/data/racehub.db`, `RACEHUB_ARTIFACTS_DIR=/data/racehub_artifacts`, `RACEHUB_STATIC_DIR=/opt/racehub/web-dist`
+- GHCR publish workflow: `.github/workflows/publish-racehub-image.yml`
+  - triggers on pushes to `main` and tags `v*`
+  - publishes `linux/amd64` images to `ghcr.io/<owner>/racehub`
+  - uses Docker BuildKit `type=gha` cache and `cargo-chef` dependency-layer caching
 
 ### `vscode-extension/` — Artifact Upload Connector
 
