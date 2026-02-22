@@ -9,12 +9,12 @@ A racing game prototype where cars can be driven by AI implemented as **RISC-V p
 ```
 Cargo.toml            # Workspace root — members: racing, emulator, race-protocol, racehub. Excludes bot.
 Dockerfile            # Multi-stage production image build (racehub binary + web-dist wasm build)
-/.github/workflows/   # CI workflows, including GHCR container publish
+/.github/workflows/   # CI workflows, including GHCR container publish and VSCode .vsix artifact build
 ├── racing/           # Bevy game — physics, rendering, car spawning, AI systems
 ├── emulator/         # Use-case-agnostic RISC-V emulator (RV32IMAFC + RV32C/Zcf) with Bevy integration
 ├── race-protocol/    # Shared API DTOs used by backend/client/game/extension
 ├── racehub/          # Minimal backend (auth + artifact storage/list/download/delete)
-├── vscode-extension/ # VSCode extension for artifact upload (not a Cargo crate)
+├── vscode-extension/ # VSCode extension for bot bootstrap + build/upload + artifact management (not a Cargo crate)
 └── bot/              # no_std RISC-V programs compiled to bare-metal ELF (separate target)
 ```
 
@@ -202,14 +202,33 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - triggers on pushes to `main` and tags `v*`
   - publishes `linux/amd64` images to `ghcr.io/<owner>/racehub`
   - uses Docker BuildKit `type=gha` cache and `cargo-chef` dependency-layer caching
+- VSCode extension build workflow: `.github/workflows/build-vscode-extension.yml`
+  - triggers on pushes and pull requests to `main` plus manual dispatch
+  - compiles `vscode-extension`, packages a `.vsix`, uploads it as a workflow artifact
+  - no marketplace publish step (artifact-only distribution)
 
-### `vscode-extension/` — Artifact Upload Connector
+### `vscode-extension/` — Bot Workflow + Artifact Connector
 
 - TypeScript VSCode extension.
 - Commands:
   - `RaceHub: Configure Server URL`
-  - `RaceHub: Login`
-  - `RaceHub: Upload Artifact File`
+  - `RaceHub: Login` (webview form)
+  - `RaceHub: Initialize Bot Project`
+  - `RaceHub: Open Bot Project`
+- Server URL is profile-only (no raw server URL setting):
+  - `production` -> `https://racers.mlkr.eu` (default)
+  - `localhost` -> `http://127.0.0.1:8787`
+  - `custom` -> `racehub.customServerUrl`
+- Dedicated `RaceHub` activity bar view with explicit states:
+  - `loggedOut`: login + server config actions
+  - `needsWorkspace`: initialize/open bot project actions
+  - `ready`: local binaries + remote artifacts
+- Action density policy:
+  - minimal inline actions (`Build & Upload` on local bins, `Replace` on owned artifacts)
+  - secondary actions are context-menu based (`Build`, `Reveal ELF Path`, `Delete`, `Toggle Visibility`)
+- Bootstrap template assets: `vscode-extension/templates/bot-starter/` (`Cargo.toml`, `.cargo/config.toml`, `link.x`, `src/lib.rs`, `src/log.rs`, `src/driving.rs`, `src/bin/car.rs`)
+- Template parity rule: `templates/bot-starter/src/lib.rs`, `src/log.rs`, and `src/driving.rs` must remain exact copies of `bot/src/lib.rs`, `bot/src/log.rs`, and `bot/src/driving.rs`.
+- Replacement semantics are best-effort cleanup: upload new artifact first, then delete selected old artifact if owned.
 - Detects server capabilities and skips auth flow automatically when `auth_required=false`.
 
 ### `racing/` — The Game

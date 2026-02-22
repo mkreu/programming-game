@@ -1,7 +1,7 @@
 {
   "name": "programming-game-racehub",
   "displayName": "Programming Game RaceHub",
-  "description": "Upload RISC-V bot artifacts to RaceHub",
+  "description": "Integrated RaceHub workflow for bot build, upload, and artifact management",
   "version": "0.1.0",
   "publisher": "programming-game",
   "engines": {
@@ -11,7 +11,9 @@
   "activationEvents": [
     "onCommand:racehub.configureServer",
     "onCommand:racehub.login",
-    "onCommand:racehub.uploadArtifact"
+    "onCommand:racehub.initializeBotProject",
+    "onCommand:racehub.openBotProject",
+    "onView:racehub.explorer"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -25,17 +27,128 @@
         "title": "RaceHub: Login"
       },
       {
-        "command": "racehub.uploadArtifact",
-        "title": "RaceHub: Upload Artifact File"
+        "command": "racehub.initializeBotProject",
+        "title": "RaceHub: Initialize Bot Project"
+      },
+      {
+        "command": "racehub.openBotProject",
+        "title": "RaceHub: Open Bot Project"
+      },
+      {
+        "command": "racehub.view.refresh",
+        "title": "RaceHub: Refresh"
+      },
+      {
+        "command": "racehub.view.buildAndUpload",
+        "title": "RaceHub: Build & Upload"
+      },
+      {
+        "command": "racehub.view.buildBinary",
+        "title": "RaceHub: Build Binary"
+      },
+      {
+        "command": "racehub.view.revealElfPath",
+        "title": "RaceHub: Reveal ELF Path"
+      },
+      {
+        "command": "racehub.view.replaceArtifact",
+        "title": "RaceHub: Replace Artifact"
+      },
+      {
+        "command": "racehub.view.deleteArtifact",
+        "title": "RaceHub: Delete Artifact"
+      },
+      {
+        "command": "racehub.view.toggleVisibility",
+        "title": "RaceHub: Toggle Artifact Visibility"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "racehub",
+          "title": "RaceHub",
+          "icon": "media/racehub.svg"
+        }
+      ]
+    },
+    "views": {
+      "racehub": [
+        {
+          "id": "racehub.explorer",
+          "name": "Artifacts"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "racehub.view.refresh",
+          "when": "view == racehub.explorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "racehub.configureServer",
+          "when": "view == racehub.explorer",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "racehub.view.buildAndUpload",
+          "when": "view == racehub.explorer && viewItem == localBin",
+          "group": "inline@1"
+        },
+        {
+          "command": "racehub.view.buildBinary",
+          "when": "view == racehub.explorer && viewItem == localBin",
+          "group": "navigation@1"
+        },
+        {
+          "command": "racehub.view.revealElfPath",
+          "when": "view == racehub.explorer && viewItem == localBin",
+          "group": "navigation@2"
+        },
+        {
+          "command": "racehub.view.replaceArtifact",
+          "when": "view == racehub.explorer && viewItem == remoteArtifactOwned",
+          "group": "inline@1"
+        },
+        {
+          "command": "racehub.view.toggleVisibility",
+          "when": "view == racehub.explorer && viewItem == remoteArtifactOwned",
+          "group": "navigation@1"
+        },
+        {
+          "command": "racehub.view.deleteArtifact",
+          "when": "view == racehub.explorer && viewItem == remoteArtifactOwned",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "configuration": {
       "title": "RaceHub",
       "properties": {
-        "racehub.serverUrl": {
+        "racehub.serverProfile": {
           "type": "string",
-          "default": "http://127.0.0.1:8787",
-          "description": "RaceHub base URL"
+          "enum": ["production", "localhost", "custom"],
+          "default": "production",
+          "description": "Server profile used by RaceHub extension requests"
+        },
+        "racehub.customServerUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Custom RaceHub URL used when serverProfile is custom"
+        },
+        "racehub.defaultArtifactTarget": {
+          "type": "string",
+          "default": "riscv32imafc-unknown-none-elf",
+          "description": "Default Rust target triple for build and upload"
+        },
+        "racehub.botWorkspacePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute/relative path to bot workspace root when it differs from the open folder"
         }
       }
     }

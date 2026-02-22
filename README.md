@@ -2,6 +2,15 @@
 
 Rust/Bevy racing prototype where cars run RISC-V ELF artifacts fetched from RaceHub.
 
+## Player Onboarding (2 Steps)
+
+1. Register on the RaceHub site (`/register`) when running in server mode (`RACEHUB_AUTH_MODE=required`).
+2. Install the VSCode extension from a packaged `.vsix` artifact (manual install for now).
+
+Recommended workflow after onboarding:
+- Run `RaceHub: Initialize Bot Project` once to scaffold a starter `bot` project.
+- Use the RaceHub sidebar to build/upload local binaries and manage uploaded artifacts.
+
 ## Run Modes
 
 ### 1) Standalone mode (single process, no auth)
@@ -101,6 +110,14 @@ Behavior:
   - BuildKit GitHub Actions cache (`type=gha`)
 - Publishes `linux/amd64` images with tags for `latest` (default branch), branch/tag refs, and commit SHA.
 
+## VSCode Extension Build Workflow
+
+GitHub Actions workflow: `.github/workflows/build-vscode-extension.yml`
+
+Behavior:
+- Builds and packages the VSCode extension on pushes/PRs to `main` (and manual dispatch).
+- Uploads a `.vsix` file as a workflow artifact for manual installation.
+
 ## Web Build
 
 Install target and wasm bindgen CLI once:
@@ -151,8 +168,24 @@ Run/debug in VSCode:
 Available commands:
 - `RaceHub: Configure Server URL`
 - `RaceHub: Login`
-- `RaceHub: Upload Artifact File`
+- `RaceHub: Initialize Bot Project`
+- `RaceHub: Open Bot Project`
+
+Sidebar (`RaceHub` activity bar):
+- `loggedOut`: shows login actions only.
+- `needsWorkspace`: shows initialize/open bot project actions only.
+- `ready`: shows `Local Binaries` and `Remote Artifacts`.
+- Inline actions are minimal (`Build & Upload` for local binaries, `Replace` for owned artifacts). Secondary actions are in context menus.
 
 Auth behavior:
-- Server mode (`auth_required=true`): extension requires login and stores bearer token in VSCode secret storage.
-- Standalone mode (`auth_required=false`): extension uploads without login.
+- Server mode (`auth_required=true`): extension uses a custom webview login form and stores bearer token in VSCode secret storage.
+- Standalone mode (`auth_required=false`): build/upload/manage works without login.
+
+Server URL behavior:
+- Profile-based configuration only:
+  - `production` -> `https://racers.mlkr.eu` (default)
+  - `localhost` -> `http://127.0.0.1:8787`
+  - `custom` -> `racehub.customServerUrl`
+
+Replace behavior:
+- “Replace artifact” uploads a new build first, then attempts to delete the selected old artifact (best-effort cleanup; no rollback if delete fails).

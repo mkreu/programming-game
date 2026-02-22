@@ -1,0 +1,25 @@
+[package]
+name = "bot"
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "car"
+path = "src/bin/car.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+bevy_math = { version = "0.18", default-features = false, features = ["libm"] }
