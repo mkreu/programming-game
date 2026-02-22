@@ -153,7 +153,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 ### `race-protocol/` — Shared API Types
 
 - Shared request/response DTOs for backend/client/game/extension.
-- Defines minimal v1 payloads for auth, capabilities, artifact metadata, and artifact upload.
+- Defines minimal v1 payloads for auth, capabilities, artifact metadata (including owner username, visibility, and ownership flags), artifact visibility updates, and artifact upload.
 - Keep this crate transport-agnostic and serde-only.
 
 ### `racehub/` — Single-Executable Backend
@@ -175,6 +175,11 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - `POST /api/v1/artifacts`
   - `GET /api/v1/artifacts/{id}`
   - `DELETE /api/v1/artifacts/{id}`
+  - `PATCH /api/v1/artifacts/{id}/visibility`
+- Artifact visibility model:
+  - uploads are private by default
+  - in `required` auth mode, list/download access includes own artifacts plus other users' public artifacts
+  - only owners can delete or change visibility
 - Uses session tokens stored in SQLite and accepts either:
   - `Authorization: Bearer <token>` (VSCode extension / native clients)
   - `racehub_session` cookie (browser/web game flow)
@@ -210,7 +215,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 ### `racing/` — The Game
 
 - **`main.rs`** — Bevy app setup, game state management (`SimState`), event-based car spawning, physics, free camera with follow-on-select, two AI systems
-- **`ui.rs`** — `RaceUiPlugin`: right-side panel with persistent server status dialog, refresh/upload artifact buttons, artifact list with per-artifact spawn/delete buttons, start/pause/reset, spawned-car controls (follow/gizmos/remove), and console output.
+- **`ui.rs`** — `RaceUiPlugin`: right-side panel with persistent server status dialog, refresh/upload artifact buttons, artifact list with owner + visibility labels and per-artifact actions (spawn for all visible artifacts, delete/visibility toggle for owned artifacts), start/pause/reset, spawned-car controls (follow/gizmos/remove), and console output.
 - **`devices.rs`** — `CarStateDevice`, `CarControlsDevice`, `SplineDevice`, `TrackRadarDevice`, and `CarRadarDevice` implementing `Device` (host-side counterparts to the bot's volatile pointers and their uptate systems for bevy logic)
 - **`track.rs`** — `TrackSpline` resource, spline construction, track/kerb mesh generation
 - **`track_format.rs`** — TOML-based track file format (`TrackFile`)
@@ -224,6 +229,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - loading artifact lists
   - manual artifact upload from file chooser (native + web)
   - deleting artifacts from RaceHub storage
+  - toggling artifact visibility (`public`/`private`) for owned artifacts
   - spawning cars directly from artifact list rows (`DriverType::RemoteArtifact`) by downloading ELF via HTTP
 
 **Key components:**

@@ -13,13 +13,14 @@ use axum::{
     extract::{OriginalUri, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use base64::Engine;
 use chrono::Utc;
 use race_protocol::{
     ArtifactSummary, ErrorResponse, LoginRequest, LoginResponse, RegisterRequest,
-    ServerCapabilities, UploadArtifactRequest, UploadArtifactResponse, UserInfo,
+    ServerCapabilities, UpdateArtifactVisibilityRequest, UploadArtifactRequest,
+    UploadArtifactResponse, UserInfo,
 };
 use rand::Rng;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -251,6 +252,10 @@ fn build_app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .route(
             "/api/v1/artifacts/{id}",
             get(download_artifact).delete(delete_artifact),
+        )
+        .route(
+            "/api/v1/artifacts/{id}/visibility",
+            patch(update_artifact_visibility),
         )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -485,25 +490,28 @@ async fn list_artifacts(
     let user = authenticate(&state, &headers).await?;
     let db = state.db.lock().await;
 
-    let mut sql =
-        "SELECT id, owner_user_id, name, note, target, created_at FROM artifacts".to_string();
+    let mut sql = "SELECT a.id, a.owner_user_id, u.username, a.name, a.note, a.target, a.is_public, a.created_at FROM artifacts a JOIN users u ON u.id = a.owner_user_id".to_string();
     if state.auth_mode == AuthMode::Required {
-        sql.push_str(" WHERE owner_user_id = ?1");
+        sql.push_str(" WHERE a.owner_user_id = ?1 OR a.is_public = 1");
     }
-    sql.push_str(" ORDER BY created_at DESC");
+    sql.push_str(" ORDER BY a.created_at DESC");
 
     let mut stmt = db
         .prepare(&sql)
         .map_err(|e| ApiError::internal(format!("failed to prepare artifact query: {e}")))?;
 
     let mapper = |row: &rusqlite::Row<'_>| {
+        let owner_user_id: i64 = row.get(1)?;
         Ok(ArtifactSummary {
             id: row.get(0)?,
-            owner_user_id: row.get(1)?,
-            name: row.get(2)?,
-            note: row.get(3)?,
-            target: row.get(4)?,
-            created_at: row.get(5)?,
+            owner_user_id,
+            owner_username: row.get(2)?,
+            name: row.get(3)?,
+            note: row.get(4)?,
+            target: row.get(5)?,
+            is_public: row.get::<_, i64>(6)? != 0,
+            owned_by_me: owner_user_id == user.id,
+            created_at: row.get(7)?,
         })
     };
 
@@ -548,8 +556,14 @@ async fn upload_artifact(
     let db = state.db.lock().await;
     let now = now_utc();
     db.execute(
-        "INSERT INTO artifacts (owner_user_id, name, note, target, elf_path, created_at) VALUES (?1, ?2, ?3, ?4, '', ?5)",
-        params![user.id, payload.name.trim(), payload.note, payload.target.trim(), now],
+        "INSERT INTO artifacts (owner_user_id, name, note, target, elf_path, is_public, created_at) VALUES (?1, ?2, ?3, ?4, '', 0, ?5)",
+        params![
+            user.id,
+            payload.name.trim(),
+            payload.note,
+            payload.target.trim(),
+            now
+        ],
     )
     .map_err(|e| ApiError::internal(format!("failed to create artifact row: {e}")))?;
 
@@ -575,6 +589,7 @@ async fn upload_artifact(
         owner_user_id = user.id,
         artifact_name = payload.name.trim(),
         target = payload.target.trim(),
+        is_public = false,
         "artifact uploaded"
     );
     Ok(Json(UploadArtifactResponse { artifact_id }))
@@ -588,20 +603,20 @@ async fn download_artifact(
     let user = authenticate(&state, &headers).await?;
     let db = state.db.lock().await;
 
-    let row: Option<(i64, String)> = db
+    let row: Option<(i64, String, i64)> = db
         .query_row(
-            "SELECT owner_user_id, elf_path FROM artifacts WHERE id = ?1",
+            "SELECT owner_user_id, elf_path, is_public FROM artifacts WHERE id = ?1",
             params![artifact_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(|e| ApiError::internal(format!("failed to query artifact: {e}")))?;
 
-    let Some((owner_user_id, rel_path)) = row else {
+    let Some((owner_user_id, rel_path, is_public)) = row else {
         return Err(ApiError::not_found("artifact not found"));
     };
 
-    if state.auth_mode == AuthMode::Required && owner_user_id != user.id {
+    if state.auth_mode == AuthMode::Required && owner_user_id != user.id && is_public == 0 {
         return Err(ApiError::unauthorized(
             "artifact is not owned by current user",
         ));
@@ -673,6 +688,51 @@ async fn delete_artifact(
         .map_err(|e| ApiError::internal(format!("failed to delete artifact row: {e}")))?;
 
     info!(artifact_id, owner_user_id = user.id, "artifact deleted");
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn update_artifact_visibility(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(artifact_id): AxumPath<i64>,
+    Json(payload): Json<UpdateArtifactVisibilityRequest>,
+) -> Result<Response, ApiError> {
+    let user = authenticate(&state, &headers).await?;
+    let db = state.db.lock().await;
+
+    let owner_user_id: Option<i64> = db
+        .query_row(
+            "SELECT owner_user_id FROM artifacts WHERE id = ?1",
+            params![artifact_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| ApiError::internal(format!("failed to query artifact: {e}")))?;
+
+    let Some(owner_user_id) = owner_user_id else {
+        return Err(ApiError::not_found("artifact not found"));
+    };
+
+    if state.auth_mode == AuthMode::Required && owner_user_id != user.id {
+        return Err(ApiError::unauthorized(
+            "artifact is not owned by current user",
+        ));
+    }
+
+    let is_public_i64 = if payload.is_public { 1 } else { 0 };
+    db.execute(
+        "UPDATE artifacts SET is_public = ?1 WHERE id = ?2",
+        params![is_public_i64, artifact_id],
+    )
+    .map_err(|e| ApiError::internal(format!("failed to update artifact visibility: {e}")))?;
+
+    info!(
+        artifact_id,
+        owner_user_id = user.id,
+        is_public = payload.is_public,
+        "artifact visibility updated"
+    );
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1043,11 +1103,31 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             note TEXT,
             target TEXT NOT NULL,
             elf_path TEXT NOT NULL,
+            is_public INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         ",
-    )
+    )?;
+
+    let mut has_is_public = false;
+    let mut stmt = conn.prepare("PRAGMA table_info(artifacts)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == "is_public" {
+            has_is_public = true;
+            break;
+        }
+    }
+
+    if !has_is_public {
+        conn.execute(
+            "ALTER TABLE artifacts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -1062,7 +1142,9 @@ mod tests {
         body::{Body, to_bytes},
         http::Request,
     };
-    use race_protocol::LoginResponse;
+    use race_protocol::{
+        ArtifactSummary, LoginResponse, UpdateArtifactVisibilityRequest, UploadArtifactRequest,
+    };
     use tower::ServiceExt;
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
@@ -1114,6 +1196,99 @@ mod tests {
             .await
             .expect("create session");
         format!("{COOKIE_NAME}={token}")
+    }
+
+    async fn upload_artifact_with_cookie(
+        app: &Router,
+        cookie: &str,
+        name: &str,
+    ) -> (StatusCode, i64) {
+        let payload = UploadArtifactRequest {
+            name: name.to_string(),
+            note: None,
+            target: "riscv32imafc-unknown-none-elf".to_string(),
+            elf_base64: base64::engine::general_purpose::STANDARD.encode([0x7f, b'E', b'L', b'F']),
+        };
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/artifacts")
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&payload).expect("serialize payload"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let parsed: UploadArtifactResponse = serde_json::from_slice(&body).expect("upload json");
+        (status, parsed.artifact_id)
+    }
+
+    async fn list_artifacts_with_cookie(app: &Router, cookie: &str) -> Vec<ArtifactSummary> {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/artifacts")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        serde_json::from_slice(&body).expect("artifact list json")
+    }
+
+    async fn update_visibility_with_cookie(
+        app: &Router,
+        cookie: &str,
+        artifact_id: i64,
+        is_public: bool,
+    ) -> StatusCode {
+        let payload = UpdateArtifactVisibilityRequest { is_public };
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/v1/artifacts/{artifact_id}/visibility"))
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&payload).expect("serialize payload"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        resp.status()
+    }
+
+    async fn download_artifact_with_cookie(
+        app: &Router,
+        cookie: &str,
+        artifact_id: i64,
+    ) -> StatusCode {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/artifacts/{artifact_id}"))
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        resp.status()
     }
 
     #[tokio::test]
@@ -1431,5 +1606,198 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(static_dir);
         let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn uploads_are_private_by_default() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        let alice_cookie = make_session_cookie(&state, "alice", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let (status, artifact_id) = upload_artifact_with_cookie(&app, &alice_cookie, "a.elf").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let artifacts = list_artifacts_with_cookie(&app, &alice_cookie).await;
+        let artifact = artifacts
+            .into_iter()
+            .find(|a| a.id == artifact_id)
+            .expect("artifact exists");
+        assert!(!artifact.is_public);
+        assert!(artifact.owned_by_me);
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn list_artifacts_in_required_mode_shows_own_and_public_others() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        create_user(&state, "bob", "password123").await;
+        let alice_cookie = make_session_cookie(&state, "alice", "password123").await;
+        let bob_cookie = make_session_cookie(&state, "bob", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let (_, alice_artifact_id) =
+            upload_artifact_with_cookie(&app, &alice_cookie, "alice.elf").await;
+        let (_, bob_artifact_id) = upload_artifact_with_cookie(&app, &bob_cookie, "bob.elf").await;
+        assert_eq!(
+            update_visibility_with_cookie(&app, &bob_cookie, bob_artifact_id, true).await,
+            StatusCode::NO_CONTENT
+        );
+
+        let alice_view = list_artifacts_with_cookie(&app, &alice_cookie).await;
+        assert!(
+            alice_view
+                .iter()
+                .any(|a| a.id == alice_artifact_id && a.owned_by_me)
+        );
+        assert!(
+            alice_view
+                .iter()
+                .any(|a| a.id == bob_artifact_id && !a.owned_by_me && a.is_public)
+        );
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn list_artifacts_hides_private_others() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        create_user(&state, "bob", "password123").await;
+        let alice_cookie = make_session_cookie(&state, "alice", "password123").await;
+        let bob_cookie = make_session_cookie(&state, "bob", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let (_, bob_artifact_id) = upload_artifact_with_cookie(&app, &bob_cookie, "bob.elf").await;
+        let alice_view = list_artifacts_with_cookie(&app, &alice_cookie).await;
+        assert!(!alice_view.iter().any(|a| a.id == bob_artifact_id));
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn download_public_artifact_allowed_for_non_owner() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        create_user(&state, "bob", "password123").await;
+        let alice_cookie = make_session_cookie(&state, "alice", "password123").await;
+        let bob_cookie = make_session_cookie(&state, "bob", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let (_, artifact_id) = upload_artifact_with_cookie(&app, &bob_cookie, "bob.elf").await;
+        assert_eq!(
+            update_visibility_with_cookie(&app, &bob_cookie, artifact_id, true).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            download_artifact_with_cookie(&app, &alice_cookie, artifact_id).await,
+            StatusCode::OK
+        );
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn download_private_artifact_denied_for_non_owner() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        create_user(&state, "bob", "password123").await;
+        let alice_cookie = make_session_cookie(&state, "alice", "password123").await;
+        let bob_cookie = make_session_cookie(&state, "bob", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let (_, artifact_id) = upload_artifact_with_cookie(&app, &bob_cookie, "bob.elf").await;
+        assert_eq!(
+            download_artifact_with_cookie(&app, &alice_cookie, artifact_id).await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn owner_can_toggle_visibility() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        let alice_cookie = make_session_cookie(&state, "alice", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let (_, artifact_id) = upload_artifact_with_cookie(&app, &alice_cookie, "alice.elf").await;
+        assert_eq!(
+            update_visibility_with_cookie(&app, &alice_cookie, artifact_id, true).await,
+            StatusCode::NO_CONTENT
+        );
+
+        let artifacts = list_artifacts_with_cookie(&app, &alice_cookie).await;
+        let artifact = artifacts
+            .into_iter()
+            .find(|a| a.id == artifact_id)
+            .expect("artifact exists");
+        assert!(artifact.is_public);
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[tokio::test]
+    async fn non_owner_cannot_toggle_visibility() {
+        let (state, static_dir, artifacts_dir) = setup_test_state(AuthMode::Required, true);
+        create_user(&state, "alice", "password123").await;
+        create_user(&state, "bob", "password123").await;
+        let alice_cookie = make_session_cookie(&state, "alice", "password123").await;
+        let bob_cookie = make_session_cookie(&state, "bob", "password123").await;
+        let app = build_app(state, Some(static_dir.clone()));
+
+        let (_, artifact_id) = upload_artifact_with_cookie(&app, &bob_cookie, "bob.elf").await;
+        assert_eq!(
+            update_visibility_with_cookie(&app, &alice_cookie, artifact_id, true).await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        let _ = std::fs::remove_dir_all(static_dir);
+        let _ = std::fs::remove_dir_all(artifacts_dir);
+    }
+
+    #[test]
+    fn migration_adds_is_public_column() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        conn.execute_batch(
+            "
+            CREATE TABLE artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                note TEXT,
+                target TEXT NOT NULL,
+                elf_path TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            ",
+        )
+        .expect("create legacy artifacts table");
+
+        run_migrations(&conn).expect("run migrations");
+
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(artifacts)")
+            .expect("prepare pragma");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query columns");
+        let mut has_is_public = false;
+        for row in rows {
+            if row.expect("column") == "is_public" {
+                has_is_public = true;
+                break;
+            }
+        }
+        assert!(has_is_public);
     }
 }

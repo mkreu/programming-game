@@ -18,6 +18,7 @@ impl Plugin for RaceUiPlugin {
                     update_artifact_list_ui,
                     handle_artifact_spawn_button,
                     handle_artifact_delete_button,
+                    handle_artifact_visibility_button,
                     update_car_list_ui,
                     handle_remove_car_button,
                     handle_toggle_gizmos_button,
@@ -52,6 +53,8 @@ struct UploadArtifactButton;
 struct SpawnArtifactButton(i64);
 #[derive(Component)]
 struct DeleteArtifactButton(i64);
+#[derive(Component)]
+struct ToggleArtifactVisibilityButton(i64, bool);
 #[derive(Component)]
 struct StartButton;
 #[derive(Component)]
@@ -315,7 +318,15 @@ fn update_artifact_list_ui(
 
     for artifact in &web_state.artifacts {
         let artifact_id = artifact.id;
-        let label = format!("{} [#{}]", artifact.name, artifact.id);
+        let visibility = if artifact.is_public {
+            "public"
+        } else {
+            "private"
+        };
+        let label = format!(
+            "{} [#{}] by {} ({})",
+            artifact.name, artifact.id, artifact.owner_username, visibility
+        );
 
         commands.entity(container).with_children(|list| {
             list.spawn((
@@ -353,18 +364,38 @@ fn update_artifact_list_ui(
                     btn.spawn((Text::new("Spawn"), text_font(12.0), TextColor(TEXT_COLOR)));
                 });
 
-                row.spawn((
-                    Button,
-                    DeleteArtifactButton(artifact_id),
-                    Node {
-                        padding: UiRect::axes(px(6.0), px(2.0)),
-                        ..default()
-                    },
-                    BackgroundColor(RESET_BG),
-                ))
-                .with_children(|btn| {
-                    btn.spawn((Text::new("Delete"), text_font(12.0), TextColor(TEXT_COLOR)));
-                });
+                if artifact.owned_by_me {
+                    row.spawn((
+                        Button,
+                        ToggleArtifactVisibilityButton(artifact_id, !artifact.is_public),
+                        Node {
+                            padding: UiRect::axes(px(6.0), px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(BTN_BG),
+                    ))
+                    .with_children(|btn| {
+                        let text = if artifact.is_public {
+                            "Make Private"
+                        } else {
+                            "Make Public"
+                        };
+                        btn.spawn((Text::new(text), text_font(12.0), TextColor(TEXT_COLOR)));
+                    });
+
+                    row.spawn((
+                        Button,
+                        DeleteArtifactButton(artifact_id),
+                        Node {
+                            padding: UiRect::axes(px(6.0), px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(RESET_BG),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((Text::new("Delete"), text_font(12.0), TextColor(TEXT_COLOR)));
+                    });
+                }
             });
         });
     }
@@ -400,6 +431,25 @@ fn handle_artifact_delete_button(
     for (interaction, delete_btn) in &query {
         if *interaction == Interaction::Pressed {
             web_commands.write(WebApiCommand::DeleteArtifact { id: delete_btn.0 });
+        }
+    }
+}
+
+fn handle_artifact_visibility_button(
+    query: Query<(&Interaction, &ToggleArtifactVisibilityButton), Changed<Interaction>>,
+    mut web_commands: MessageWriter<WebApiCommand>,
+    state: Res<State<SimState>>,
+) {
+    if *state.get() != SimState::PreRace {
+        return;
+    }
+
+    for (interaction, toggle_btn) in &query {
+        if *interaction == Interaction::Pressed {
+            web_commands.write(WebApiCommand::SetArtifactVisibility {
+                id: toggle_btn.0,
+                is_public: toggle_btn.1,
+            });
         }
     }
 }

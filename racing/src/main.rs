@@ -17,7 +17,8 @@ use bevy::{
 use emulator::bevy::{CpuComponent, cpu_system};
 use emulator::cpu::LogDevice;
 use race_protocol::{
-    ArtifactSummary, ServerCapabilities, UploadArtifactRequest, UploadArtifactResponse,
+    ArtifactSummary, ServerCapabilities, UpdateArtifactVisibilityRequest, UploadArtifactRequest,
+    UploadArtifactResponse,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use race_protocol::{LoginRequest, LoginResponse};
@@ -64,6 +65,7 @@ mod main_game {
         LoadArtifacts,
         UploadArtifact,
         DeleteArtifact { id: i64 },
+        SetArtifactVisibility { id: i64, is_public: bool },
     }
 
     // ── Resources ───────────────────────────────────────────────────────
@@ -131,6 +133,11 @@ mod main_game {
         UploadResult(Result<UploadArtifactResponse, String>),
         DeleteResult {
             artifact_id: i64,
+            result: Result<(), String>,
+        },
+        VisibilityResult {
+            artifact_id: i64,
+            is_public: bool,
             result: Result<(), String>,
         },
     }
@@ -593,6 +600,65 @@ fn web_delete_artifact(
     });
 }
 
+fn web_set_artifact_visibility(
+    server_url: &str,
+    _token: Option<&str>,
+    artifact_id: i64,
+    is_public: bool,
+    queue: Arc<Mutex<Vec<WebApiEvent>>>,
+) {
+    let url = web_api_url(
+        server_url,
+        &format!("/api/v1/artifacts/{artifact_id}/visibility"),
+    );
+    let mut request =
+        match ehttp::Request::json(url, &UpdateArtifactVisibilityRequest { is_public }) {
+            Ok(req) => req,
+            Err(err) => {
+                push_web_event(
+                    &queue,
+                    WebApiEvent::VisibilityResult {
+                        artifact_id,
+                        is_public,
+                        result: Err(format!("failed to serialize visibility payload: {err}")),
+                    },
+                );
+                return;
+            }
+        };
+    request.method = "PATCH".to_string();
+    #[cfg(not(target_arch = "wasm32"))]
+    let token = _token;
+    #[cfg(target_arch = "wasm32")]
+    let token: Option<&str> = None;
+    if let Some(token) = token {
+        request
+            .headers
+            .insert("Authorization", format!("Bearer {token}"));
+    }
+
+    ehttp::fetch(request, move |result| {
+        let event = match result {
+            Ok(resp) if resp.ok => WebApiEvent::VisibilityResult {
+                artifact_id,
+                is_public,
+                result: Ok(()),
+            },
+            Ok(resp) => WebApiEvent::VisibilityResult {
+                artifact_id,
+                is_public,
+                result: Err(response_error(&resp)),
+            },
+            Err(err) => WebApiEvent::VisibilityResult {
+                artifact_id,
+                is_public,
+                result: Err(format!("network error: {err}")),
+            },
+        };
+        push_web_event(&queue, event);
+    });
+}
+
 fn web_fetch_artifact_elf(
     server_url: &str,
     token: Option<&str>,
@@ -774,6 +840,32 @@ fn handle_web_api_commands(
                     web_queue.events.clone(),
                 );
             }
+            WebApiCommand::SetArtifactVisibility { id, is_public } => {
+                if web_state.auth_required.is_none() {
+                    web_state.status_message =
+                        Some("[capabilities] Checking server capabilities first...".to_string());
+                    web_fetch_capabilities(&web_state.server_url, web_queue.events.clone());
+                    continue;
+                }
+                let token = match maybe_auth_token(&web_state) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        web_state.status_message = Some(error);
+                        continue;
+                    }
+                };
+                let visibility = if *is_public { "public" } else { "private" };
+                web_state.status_message = Some(format!(
+                    "[visibility] Setting artifact #{id} to {visibility}..."
+                ));
+                web_set_artifact_visibility(
+                    &web_state.server_url,
+                    token.as_deref(),
+                    *id,
+                    *is_public,
+                    web_queue.events.clone(),
+                );
+            }
         }
     }
 }
@@ -887,6 +979,30 @@ fn process_web_api_events(mut web_state: ResMut<WebPortalState>, web_queue: Res<
                 Err(error) => {
                     web_state.status_message = Some(format!(
                         "[error][delete] Failed to delete artifact #{artifact_id}: {error}"
+                    ));
+                }
+            },
+            WebApiEvent::VisibilityResult {
+                artifact_id,
+                is_public,
+                result,
+            } => match result {
+                Ok(()) => {
+                    let visibility = if is_public { "public" } else { "private" };
+                    web_state.status_message = Some(format!(
+                        "[visibility] Set artifact #{artifact_id} to {visibility}"
+                    ));
+                    if let Ok(token) = maybe_auth_token(&web_state) {
+                        web_fetch_artifacts(
+                            &web_state.server_url,
+                            token.as_deref(),
+                            web_queue.events.clone(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    web_state.status_message = Some(format!(
+                        "[error][visibility] Failed to update artifact #{artifact_id}: {error}"
                     ));
                 }
             },

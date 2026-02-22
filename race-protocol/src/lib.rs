@@ -47,9 +47,12 @@ fn default_registration_enabled() -> bool {
 pub struct ArtifactSummary {
     pub id: i64,
     pub owner_user_id: i64,
+    pub owner_username: String,
     pub name: String,
     pub note: Option<String>,
     pub target: String,
+    pub is_public: bool,
+    pub owned_by_me: bool,
     pub created_at: String,
 }
 
@@ -64,4 +67,9 @@ pub struct UploadArtifactRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadArtifactResponse {
     pub artifact_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateArtifactVisibilityRequest {
+    pub is_public: bool,
 }
