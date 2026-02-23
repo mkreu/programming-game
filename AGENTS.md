@@ -219,13 +219,15 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - `production` -> `https://racers.mlkr.eu` (default)
   - `localhost` -> `http://127.0.0.1:8787`
   - `custom` -> `racehub.customServerUrl`
-- Dedicated `RaceHub` activity bar view with explicit states:
+- `RaceHub` tree view is contributed directly to the built-in Explorer sidebar with explicit states:
   - `loggedOut`: login + server config actions
   - `needsWorkspace`: initialize/open bot project actions
   - `ready`: local binaries + remote artifacts
 - Action density policy:
-  - minimal inline actions (`Build & Upload` on local bins, `Replace` on owned artifacts)
-  - secondary actions are context-menu based (`Build`, `Reveal ELF Path`, `Delete`, `Toggle Visibility`)
+  - RaceHub tree inline icon actions for local binaries: `Build & Upload`, `Build`, `Reveal ELF Path`
+  - RaceHub tree inline icon actions on owned artifacts: `Replace`, `Toggle Visibility`, `Delete`
+  - the same owned-artifact actions are also available in the context menu
+- Local bin discovery uses `Cargo.toml` (`[[bin]]` including optional `path`) and `src/bin/*.rs`.
 - Bootstrap template assets: `vscode-extension/templates/bot-starter/` (`Cargo.toml`, `.cargo/config.toml`, `link.x`, `src/lib.rs`, `src/log.rs`, `src/driving.rs`, `src/bin/car.rs`)
 - Template parity rule: `templates/bot-starter/src/lib.rs`, `src/log.rs`, and `src/driving.rs` must remain exact copies of `bot/src/lib.rs`, `bot/src/log.rs`, and `bot/src/driving.rs`.
 - Replacement semantics are best-effort cleanup: upload new artifact first, then delete selected old artifact if owned.

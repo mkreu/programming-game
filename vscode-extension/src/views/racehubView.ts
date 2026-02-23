@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import {
@@ -120,14 +121,12 @@ export class RaceHubViewProvider implements vscode.TreeDataProvider<RaceHubItem>
   private workspaceRoot: string | undefined;
   private localBinaries: LocalBinary[] = [];
   private artifacts: ArtifactSummary[] = [];
-  private artifactsError: string | undefined;
   private stateMessage: string | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   async refreshArtifacts(): Promise<void> {
     this.artifacts = [];
-    this.artifactsError = undefined;
     this.stateMessage = undefined;
     this.localBinaries = [];
     this.workspaceRoot = getWorkspaceRoot();
@@ -185,6 +184,22 @@ export class RaceHubViewProvider implements vscode.TreeDataProvider<RaceHubItem>
 
   private async pushContext(): Promise<void> {
     await vscode.commands.executeCommand('setContext', 'racehub.state', this.state);
+    await this.pushBinSourcePathsContext();
+  }
+
+  private async pushBinSourcePathsContext(): Promise<void> {
+    const allowed: Record<string, boolean> = {};
+    for (const bin of this.localBinaries) {
+      if (!bin.sourcePath) {
+        continue;
+      }
+      const normalizedFsPath = path.normalize(bin.sourcePath);
+      const uri = vscode.Uri.file(normalizedFsPath);
+      allowed[normalizedFsPath] = true;
+      allowed[uri.fsPath] = true;
+      allowed[uri.path] = true;
+    }
+    await vscode.commands.executeCommand('setContext', 'racehub.binSourcePaths', allowed);
   }
 
   getTreeItem(element: RaceHubItem): vscode.TreeItem {
@@ -209,10 +224,7 @@ export class RaceHubViewProvider implements vscode.TreeDataProvider<RaceHubItem>
         ];
       }
 
-      return [
-        new RaceHubItem({ kind: 'localRoot' }),
-        new RaceHubItem({ kind: 'remoteRoot' })
-      ];
+      return [new RaceHubItem({ kind: 'localRoot' }), new RaceHubItem({ kind: 'remoteRoot' })];
     }
 
     const node = element.node;
@@ -221,9 +233,6 @@ export class RaceHubViewProvider implements vscode.TreeDataProvider<RaceHubItem>
     }
 
     if (node.kind === 'remoteRoot') {
-      if (this.artifactsError) {
-        return [new RaceHubItem({ kind: 'message', message: `Error: ${this.artifactsError}` })];
-      }
       if (this.artifacts.length === 0) {
         return [new RaceHubItem({ kind: 'message', message: 'No artifacts found' })];
       }
@@ -276,8 +285,17 @@ export class RaceHubViewProvider implements vscode.TreeDataProvider<RaceHubItem>
       throw new Error('You can only replace artifacts you own.');
     }
 
+    const bins = this.getCurrentLocalBinaries();
+    if (bins.length === 0) {
+      throw new Error('No local binaries available in the current bot workspace.');
+    }
+
     const picked = await vscode.window.showQuickPick(
-      this.localBinaries.map((bin) => ({ label: bin.name, description: bin.rootPath, bin })),
+      bins.map((bin) => ({
+        label: bin.name,
+        description: bin.sourcePath ?? bin.rootPath,
+        bin
+      })),
       { title: `Replace artifact '${artifact.name}' with local binary` }
     );
     if (!picked) {
@@ -366,13 +384,7 @@ export class RaceHubViewProvider implements vscode.TreeDataProvider<RaceHubItem>
       value: ''
     });
 
-    const target = await vscode.window.showInputBox({
-      title: 'Target Triple',
-      value: defaultArtifactTarget()
-    });
-    if (!target) {
-      return;
-    }
+    const target = defaultArtifactTarget();
 
     const bytes = fs.readFileSync(elfPath);
 
@@ -387,5 +399,16 @@ export class RaceHubViewProvider implements vscode.TreeDataProvider<RaceHubItem>
     );
 
     void vscode.window.showInformationMessage(`Artifact uploaded: #${data.artifact_id} from '${bin.name}'`);
+  }
+
+  private getCurrentLocalBinaries(): LocalBinary[] {
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot || !hasCargoToml(workspaceRoot)) {
+      return [];
+    }
+
+    this.workspaceRoot = workspaceRoot;
+    this.localBinaries = listLocalBinaries(workspaceRoot);
+    return this.localBinaries;
   }
 }

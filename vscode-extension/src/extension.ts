@@ -30,6 +30,32 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(view);
 
+  const refresh = (): void => {
+    void provider.refreshArtifacts();
+  };
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(refresh),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('racehub')) {
+        refresh();
+      }
+    })
+  );
+
+  const cargoWatcher = vscode.workspace.createFileSystemWatcher('**/Cargo.toml');
+  const binWatcher = vscode.workspace.createFileSystemWatcher('**/src/bin/*.rs');
+  context.subscriptions.push(
+    cargoWatcher,
+    binWatcher,
+    cargoWatcher.onDidChange(refresh),
+    cargoWatcher.onDidCreate(refresh),
+    cargoWatcher.onDidDelete(refresh),
+    binWatcher.onDidChange(refresh),
+    binWatcher.onDidCreate(refresh),
+    binWatcher.onDidDelete(refresh)
+  );
+
   registerCommand(context, 'racehub.configureServer', async () => {
     await configureServerProfile();
     await provider.refreshArtifacts();
@@ -79,7 +105,7 @@ export function activate(context: vscode.ExtensionContext): void {
     await provider.toggleVisibility(item);
   });
 
-  void provider.refreshArtifacts();
+  refresh();
 }
 
 export function deactivate(): void {}

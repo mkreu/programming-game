@@ -19,27 +19,26 @@ The extension no longer uses a raw `serverUrl` setting.
 
 Use `RaceHub: Configure Server URL` to switch profiles.
 
-## View States
+## Explorer View States
 
-The `RaceHub` activity bar view has three explicit states:
+The `RaceHub` tree appears inside the built-in Explorer sidebar and has three explicit states:
 
 - `loggedOut`
   - Shows login and server configuration actions.
 - `needsWorkspace`
   - Shows initialize/open bot project actions.
 - `ready`
-  - Shows `Local Binaries` and `Remote Artifacts` trees.
+  - Shows `Local Binaries` and `Remote Artifacts`.
 
-## Sidebar Workflow (`ready` state)
+## Explorer Workflow (`ready` state)
 
 - `Local Binaries`
-  - Discovers binaries from `Cargo.toml` (`[[bin]]`) and `src/bin/*.rs`.
-  - Primary inline action: `Build & Upload`.
-  - Secondary context actions: `Build Binary`, `Reveal ELF Path`.
+  - Discovers binaries from `Cargo.toml` (`[[bin]]`, including explicit `path`) and `src/bin/*.rs`.
+  - Inline icon actions: `Build & Upload`, `Build Binary`, `Reveal ELF Path`.
 - `Remote Artifacts`
   - Lists artifacts from `GET /api/v1/artifacts`.
-  - Owned artifacts primary inline action: `Replace`.
-  - Secondary context actions: `Delete`, `Toggle Visibility`.
+  - Owned artifacts inline icon actions: `Replace`, `Toggle Visibility`, `Delete`.
+  - The same owned-artifact actions are also available in the right-click menu.
 
 Replace semantics:
 - Upload new build first.

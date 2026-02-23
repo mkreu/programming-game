@@ -8,75 +8,78 @@
     "vscode": "^1.90.0"
   },
   "categories": ["Other"],
-  "activationEvents": [
-    "onCommand:racehub.configureServer",
-    "onCommand:racehub.login",
-    "onCommand:racehub.initializeBotProject",
-    "onCommand:racehub.openBotProject",
-    "onView:racehub.explorer"
-  ],
+  "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "racehub.configureServer",
-        "title": "RaceHub: Configure Server URL"
+        "title": "Configure Server URL",
+        "category": "RaceHub"
       },
       {
         "command": "racehub.login",
-        "title": "RaceHub: Login"
+        "title": "Login",
+        "category": "RaceHub"
       },
       {
         "command": "racehub.initializeBotProject",
-        "title": "RaceHub: Initialize Bot Project"
+        "title": "Initialize Bot Project",
+        "category": "RaceHub"
       },
       {
         "command": "racehub.openBotProject",
-        "title": "RaceHub: Open Bot Project"
+        "title": "Open Bot Project",
+        "category": "RaceHub"
       },
       {
         "command": "racehub.view.refresh",
-        "title": "RaceHub: Refresh"
+        "title": "Refresh",
+        "category": "RaceHub"
       },
       {
         "command": "racehub.view.buildAndUpload",
-        "title": "RaceHub: Build & Upload"
+        "title": "Build & Upload",
+        "category": "RaceHub",
+        "icon": "$(cloud-upload)"
       },
       {
         "command": "racehub.view.buildBinary",
-        "title": "RaceHub: Build Binary"
+        "title": "Build Binary",
+        "category": "RaceHub",
+        "icon": "$(gear)"
       },
       {
         "command": "racehub.view.revealElfPath",
-        "title": "RaceHub: Reveal ELF Path"
+        "title": "Reveal ELF Path",
+        "category": "RaceHub",
+        "icon": "$(folder-opened)"
       },
       {
         "command": "racehub.view.replaceArtifact",
-        "title": "RaceHub: Replace Artifact"
+        "title": "Replace Artifact",
+        "category": "RaceHub",
+        "icon": "$(replace-all)"
       },
       {
         "command": "racehub.view.deleteArtifact",
-        "title": "RaceHub: Delete Artifact"
+        "title": "Delete Artifact",
+        "category": "RaceHub",
+        "icon": "$(trash)"
       },
       {
         "command": "racehub.view.toggleVisibility",
-        "title": "RaceHub: Toggle Artifact Visibility"
+        "title": "Toggle Artifact Visibility",
+        "category": "RaceHub",
+        "icon": "$(eye)"
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "racehub",
-          "title": "RaceHub",
-          "icon": "media/racehub.svg"
-        }
-      ]
-    },
     "views": {
-      "racehub": [
+      "explorer": [
         {
           "id": "racehub.explorer",
-          "name": "Artifacts"
+          "name": "RaceHub",
+          "icon": "media/racehub.svg"
         }
       ]
     },
@@ -102,6 +105,16 @@
         {
           "command": "racehub.view.buildBinary",
           "when": "view == racehub.explorer && viewItem == localBin",
+          "group": "inline@2"
+        },
+        {
+          "command": "racehub.view.revealElfPath",
+          "when": "view == racehub.explorer && viewItem == localBin",
+          "group": "inline@3"
+        },
+        {
+          "command": "racehub.view.buildBinary",
+          "when": "view == racehub.explorer && viewItem == localBin",
           "group": "navigation@1"
         },
         {
@@ -113,6 +126,21 @@
           "command": "racehub.view.replaceArtifact",
           "when": "view == racehub.explorer && viewItem == remoteArtifactOwned",
           "group": "inline@1"
+        },
+        {
+          "command": "racehub.view.replaceArtifact",
+          "when": "view == racehub.explorer && viewItem == remoteArtifactOwned",
+          "group": "navigation@0"
+        },
+        {
+          "command": "racehub.view.toggleVisibility",
+          "when": "view == racehub.explorer && viewItem == remoteArtifactOwned",
+          "group": "inline@2"
+        },
+        {
+          "command": "racehub.view.deleteArtifact",
+          "when": "view == racehub.explorer && viewItem == remoteArtifactOwned",
+          "group": "inline@3"
         },
         {
           "command": "racehub.view.toggleVisibility",
