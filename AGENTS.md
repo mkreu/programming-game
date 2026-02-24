@@ -249,11 +249,11 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 
 - **`main.rs`** — Thin composition root: parses CLI (`--standalone`), inserts `BootstrapConfig`, and wires plugins (`GameApiPlugin`, `RaceRuntimePlugin`, `BootstrapPlugin`, `BootstrapUiPlugin`, `RaceRuntimeUiPlugin`)
 - **`game_api.rs`** — Shared in-game message contracts and driver model (`DriverType`, `SpawnCarRequest`, `SpawnResolvedCarRequest`, `WebApiCommand`) plus `GameApiPlugin` message registration
-- **`race_runtime.rs`** — `RaceRuntimePlugin`: simulation state (`SimState`), race resources (`RaceManager`, `FollowCar`, `CpuFrequencySetting`), track/camera/FPS setup, event-based resolved-car spawning, fixed-step emulator/device/physics execution, camera + gizmos + keyboard driving
+- **`race_runtime.rs`** — `RaceRuntimePlugin`: simulation state (`SimState`), race resources (`RaceManager`, `FollowCar`, `CpuFrequencySetting`), track/camera/FPS setup, event-based resolved-car spawning, fixed-step emulator/device/physics execution, longitudinal drivetrain model, camera + gizmos + keyboard driving
 - **`bootstrap.rs`** — `BootstrapPlugin`: standalone embedded server startup, auth/capabilities/artifact web API flow, async artifact download pipeline, and `SpawnCarRequest -> SpawnResolvedCarRequest` translation
 - **`ui.rs`** — Split UI plugins:
   - `BootstrapUiPlugin` (server status + artifact actions)
-  - `RaceRuntimeUiPlugin` (race controls + car list + console)
+  - `RaceRuntimeUiPlugin` (race controls + car list + focused debug telemetry + console)
 - **`devices.rs`** — `CarStateDevice`, `CarControlsDevice`, `SplineDevice`, `TrackRadarDevice`, and `CarRadarDevice` implementing `Device` (host-side counterparts to the bot's volatile pointers and their uptate systems for bevy logic)
 - **`track.rs`** — `TrackSpline` resource, spline construction, track/kerb mesh generation
 - **`track_format.rs`** — TOML-based track file format (`TrackFile`)
@@ -271,12 +271,13 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
   - spawning cars directly from artifact list rows (`DriverType::RemoteArtifact`) by downloading ELF via HTTP
 
 **Key components:**
-- `Car` — steering, accelerator, brake state (used by physics)
+- `Car` — steering/inputs plus drivetrain state (`engine_rpm`, `wheel_omega`) used by physics
 - `EmulatorDriver` — marker component for RISC-V-emulator-driven cars
 - `CpuComponent` (from emulator crate) — attached to emulator-driven cars
 - `LogDevice`, `CarStateDevice`, `CarControlsDevice`, `SplineDevice`, `TrackRadarDevice`, `CarRadarDevice` — MMIO device components attached to emulator-driven cars
 - `CarLabel` — name label for each car
 - `DebugGizmos` — marker; when present on a car, debug gizmos are drawn (off by default)
+- `LongitudinalDebugData` — per-car telemetry snapshot for drivetrain/longitudinal force debugging
 - `FrontWheel` — visual wheel rotation marker
 
 **Key resources:**
@@ -299,7 +300,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 2. `Update`:
     - bootstrap (`handle_web_api_commands`, `process_web_api_events`, artifact download queue, spawn-request translation)
     - runtime (`handle_spawn_resolved_event`, `apply_cpu_frequency_setting`, `handle_car_input`)
-    - UI systems (bootstrap + race runtime panels), `update_camera`, `draw_gizmos`, `update_fps_counter`
+    - UI systems (bootstrap + race runtime panels, including followed-car drivetrain telemetry when gizmos are enabled), `update_camera`, `draw_gizmos`, `update_fps_counter`
 3. `FixedUpdate` (in order, only in `Racing` state):
     - `update_car_state_device` — writes physics state (position, velocity, forward direction) into `CarStateDevice` (**before** CPU execution system)
     - `update_track_radar_device` — updates `TrackRadarDevice` border ray distances (**before** CPU execution system)
@@ -317,7 +318,7 @@ Cars can only be added/removed in `PreRace` state. Each emulator car gets its ow
 
 **Camera** — Free camera by default (no cars spawned at startup). Middle/right-mouse drag to pan, scroll to zoom. When a car is selected via the UI "follow" button, the camera snaps to it; clicking again unfollows.
 
-**Physics model** — Bicycle-ish 4-wheel model: acceleration/braking along forward vector, lateral grip forces per wheel computed from slip angle. Uses `avian2d` for rigid body simulation. Fixed timestep at 200 Hz.
+**Physics model** — Bicycle-ish 4-wheel model with a stateful longitudinal drivetrain (engine torque curve, centrifugal clutch engagement, rolling resistance, aerodynamic drag, brake torque, and traction clamp) plus lateral grip forces per wheel computed from slip angle. Uses `avian2d` for rigid body simulation. Fixed timestep at 200 Hz.
 
 ## Key Architectural Decisions
 

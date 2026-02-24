@@ -3,7 +3,8 @@ use bevy::prelude::*;
 use crate::bootstrap::WebPortalState;
 use crate::game_api::{DriverType, SpawnCarRequest, WebApiCommand};
 use crate::race_runtime::{
-    CarLabel, CpuFrequencySetting, DebugGizmos, FollowCar, RaceManager, SimState,
+    CarLabel, CpuFrequencySetting, DebugGizmos, FollowCar, LongitudinalDebugData, RaceManager,
+    SimState,
 };
 
 pub struct BootstrapUiPlugin;
@@ -39,6 +40,7 @@ impl Plugin for RaceRuntimeUiPlugin {
                 handle_start_button,
                 handle_reset_button,
                 update_console_output,
+                update_debug_telemetry_ui,
                 update_cpu_frequency_text,
                 update_start_button_text,
             ),
@@ -88,6 +90,8 @@ struct CarListRow(#[allow(dead_code)] Entity);
 struct ConsoleTextContainer;
 #[derive(Component)]
 struct ConsoleText;
+#[derive(Component)]
+struct DebugTelemetryText;
 
 const PANEL_BG: Color = Color::srgba(0.08, 0.08, 0.12, 0.92);
 const BTN_BG: Color = Color::srgb(0.25, 0.25, 0.35);
@@ -292,6 +296,31 @@ fn setup_ui(mut commands: Commands, cpu_frequency: Res<CpuFrequencySetting>) {
                     CarListContainer,
                 ))
                 .with_children(|_| {});
+
+            panel.spawn((
+                Text::new("Debug Telemetry"),
+                text_font(16.0),
+                TextColor(LABEL_COLOR),
+            ));
+
+            panel
+                .spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(2.0),
+                        padding: UiRect::all(px(6.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                ))
+                .with_children(|container| {
+                    container.spawn((
+                        Text::new("Follow a gizmo-enabled car to view telemetry"),
+                        DebugTelemetryText,
+                        text_font(12.0),
+                        TextColor(TEXT_COLOR),
+                    ));
+                });
 
             panel.spawn((
                 Text::new("Console"),
@@ -654,9 +683,12 @@ fn update_car_list_ui(
     container_query: Query<Entity, With<CarListContainer>>,
     existing_rows: Query<(Entity, &CarListRow)>,
     gizmo_query: Query<(), With<DebugGizmos>>,
+    added_gizmos: Query<(), Added<DebugGizmos>>,
+    mut removed_gizmos: RemovedComponents<DebugGizmos>,
     follow: Res<FollowCar>,
 ) {
-    if !manager.is_changed() && !follow.is_changed() {
+    let gizmos_changed = !added_gizmos.is_empty() || removed_gizmos.read().next().is_some();
+    if !manager.is_changed() && !follow.is_changed() && !gizmos_changed {
         return;
     }
 
@@ -748,6 +780,59 @@ fn update_car_list_ui(
             });
         });
     }
+}
+
+fn update_debug_telemetry_ui(
+    follow: Res<FollowCar>,
+    telemetry_query: Query<(&CarLabel, &LongitudinalDebugData), With<DebugGizmos>>,
+    mut text_query: Query<&mut Text, With<DebugTelemetryText>>,
+) {
+    let Ok(mut text) = text_query.single_mut() else {
+        return;
+    };
+
+    let message = match follow.target {
+        Some(entity) => {
+            if let Ok((label, telemetry)) = telemetry_query.get(entity) {
+                format!(
+                    concat!(
+                        "{}\n",
+                        "v: {:.2} m/s ({:.1} km/h)\n",
+                        "engine: {:.0} rpm | wheel: {:.0} rpm | clutch: {:.2}\n",
+                        "throttle: {:.2} | brake: {:.2}\n",
+                        "Teng: {:.1} Nm | Tdrive: {:.1} Nm | Tbrake: {:.1} Nm\n",
+                        "Fdrive: {:.1} N | Fbrake: {:.1} N | Frr: {:.1} N | Fdrag: {:.1} N\n",
+                        "Fraw: {:.1} N | Fclamp: {:.1} N | Fmax: {:.1} N\n",
+                        "a: {:.2} m/s^2"
+                    ),
+                    label.name,
+                    telemetry.speed_mps,
+                    telemetry.speed_mps * 3.6,
+                    telemetry.engine_rpm,
+                    telemetry.wheel_rpm,
+                    telemetry.clutch_s,
+                    telemetry.throttle,
+                    telemetry.brake,
+                    telemetry.t_eng,
+                    telemetry.t_drive_axle,
+                    telemetry.t_brake_axle,
+                    telemetry.f_drive,
+                    telemetry.f_brake,
+                    telemetry.f_rr,
+                    telemetry.f_drag,
+                    telemetry.f_raw,
+                    telemetry.f_clamped,
+                    telemetry.traction_limit,
+                    telemetry.a_mps2,
+                )
+            } else {
+                "Follow a gizmo-enabled car to view telemetry".to_string()
+            }
+        }
+        None => "Follow a gizmo-enabled car to view telemetry".to_string(),
+    };
+
+    text.0 = message;
 }
 
 fn update_console_output(

@@ -58,11 +58,11 @@ fn main() -> ! {
             .set_steering(current_steer * (1.0 - steer_blend) + desired_steer * steer_blend);
 
         // Speed policy from front clearance and current speed.
-        let accel: f32 = 0.3;
+        let accel: f32 = 1.0;
         let mut brake: f32 = 0.0;
         
-        if c < 30.0 {
-            brake = 1.0 * 1.0f32.min((speed-10.0).max(0.0) / 100.0);
+        if c < 20.0 && speed > 40.0/3.6 {
+            brake = 1.0 //* 1.0f32.min((speed-10.0).max(0.0) / 5.0);
         } 
 
         // Additional high-speed caution when forward space is limited.

@@ -30,5 +30,12 @@ test = false
 doctest = false
 bench = false
 
+[[bin]]
+name = "straight"
+path = "src/bin/straight.rs"
+test = false
+doctest = false
+bench = false
+
 [dependencies]
 botracers-bot-sdk = { path = "../botracers-bot-sdk" }
