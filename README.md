@@ -80,6 +80,8 @@ Run it with persisted data:
 docker run --rm -p 8787:8787 -v botracers-data:/data ghcr.io/<owner>/botracers:latest
 ```
 
+The image declares `VOLUME /data`, which is the persistence mount point for both SQLite and uploaded artifacts. Without mounting `/data`, data is ephemeral.
+
 Container defaults:
 - `BOTRACERS_BIND=0.0.0.0:8787`
 - `BOTRACERS_DB_PATH=/data/botracers.db`

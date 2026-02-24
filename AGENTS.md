@@ -205,6 +205,7 @@ Entries are absolute world positions of nearest cars, strictly nearest-first and
 - Production container image is built by the root `Dockerfile` and includes:
   - release `botracers-server` binary
   - release wasm game bundle in `/opt/botracers/web-dist`
+  - `VOLUME /data` for persisted SQLite + artifact storage mounts
   - OCI-first metadata: no Dockerfile `HEALTHCHECK` directive (use `/healthz` endpoint for probes)
   - no `wasm-opt` step in container builds; web artifacts are produced by `./scripts/build_web.sh --release`
   - defaults: `BOTRACERS_BIND=0.0.0.0:8787`, `BOTRACERS_DB_PATH=/data/botracers.db`, `BOTRACERS_ARTIFACTS_DIR=/data/botracers_artifacts`, `BOTRACERS_STATIC_DIR=/opt/botracers/web-dist`

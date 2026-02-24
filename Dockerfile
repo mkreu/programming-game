@@ -53,6 +53,8 @@ ENV BOTRACERS_ARTIFACTS_DIR=/data/botracers_artifacts
 ENV BOTRACERS_STATIC_DIR=/opt/botracers/web-dist
 ENV RUST_LOG=info
 
+VOLUME ["/data"]
+
 EXPOSE 8787
 
 USER botracers
